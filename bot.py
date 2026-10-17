@@ -1,4 +1,4 @@
-﻿import aimport asyncio
+﻿import asyncio
 import json
 import logging
 import os
@@ -8,7 +8,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand
 from aiohttp import web
 
 TOKEN = '8802626648:AAFdxpxXFulZGe6BbeOWiJ_gAyBHVzVcH_I'
@@ -66,11 +66,72 @@ async def cmd_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📩 Активные жалобы ({len(pending_reports)})", callback_data="view_pending")],
-        [InlineKeyboardButton(text=f"❌ База скамеров ({len(scammers_db)})", callback_data="view_accepted")]
-    ])
-    await message.answer("⚙️ **Панель управления админа:**", reply_markup=kb)
+    kb_buttons = [
+        [InlineKeyboardButton(text=f"📩 Активные жалобы ({len(pending_reports)})", callback_data="view_pending")]
+    ]
+    
+    # Добавляем список скамеров кнопками прямо в панели
+    if scammers_db:
+        kb_buttons.append([InlineKeyboardButton(text="--- ❌ Список скамеров в базе ---", callback_data="ignore")])
+        for target in list(scammers_db.keys())[:15]: # Выводим до 15 штук для удобства
+            kb_buttons.append([InlineKeyboardButton(text=f"@{target}", callback_data=f"scam_info_{target}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await message.answer("⚙️ **Панель управления админа:**\nВыбери скамера из списка ниже, чтобы посмотреть его жалобу и доказательства:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith('scam_info_'))
+async def show_scammer_details(call: types.CallbackQuery, bot: Bot):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    target = call.data.replace('scam_info_', '')
+    if target in scammers_db:
+        data = scammers_db[target]
+        user_id_str = str(known_users.get(target, "Неизвестный"))
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить из базы", callback_data=f"rem_{target}")]
+        ])
+        
+        text = (
+            f"⛔ **Информация о скамере:**\n\n"
+            f"👤 **Юзернейм:** @{target}\n"
+            f"🆔 **ID:** `{user_id_str}`\n"
+            f"📝 **Причина:** {data.get('reason', 'Не указано')}\n"
+            f"👤 **Репортер ID:** `{data.get('reported_by', 'Админ')}`"
+        )
+
+        voice_id = data.get('voice_id')
+        if voice_id:
+            try:
+                await bot.send_voice(ADMIN_ID, voice=voice_id, caption="🎤 Голосовое доказательство")
+            except Exception:
+                pass
+
+        photo_ids = data.get('photo_ids', [])
+        if photo_ids:
+            if len(photo_ids) > 1:
+                media = [InputMediaPhoto(media=photo_ids[0])]
+                for pid in photo_ids[1:]:
+                    media.append(InputMediaPhoto(media=pid))
+                try:
+                    await bot.send_media_group(ADMIN_ID, media=media)
+                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
+                except Exception:
+                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
+            else:
+                try:
+                    await bot.send_photo(ADMIN_ID, photo=photo_ids[0], caption=text, reply_markup=kb)
+                except Exception:
+                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
+        else:
+            await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
+            
+    await call.answer()
+
+@dp.callback_query(F.data == "ignore")
+async def ignore_callback(call: types.CallbackQuery):
+    await call.answer()
 
 @dp.callback_query(F.data == "view_pending")
 async def view_pending_reports(call: types.CallbackQuery, bot: Bot):
@@ -122,57 +183,6 @@ async def view_pending_reports(call: types.CallbackQuery, bot: Bot):
                     await bot.send_message(ADMIN_ID, text=report_text, reply_markup=kb)
         else:
             await bot.send_message(ADMIN_ID, text=report_text, reply_markup=kb)
-    await call.answer()
-
-@dp.callback_query(F.data == "view_accepted")
-async def view_accepted_scammers(call: types.CallbackQuery, bot: Bot):
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    if not scammers_db:
-        await call.message.answer("❌ База скамеров пуста.")
-        await call.answer()
-        return
-
-    for target, data in list(scammers_db.items()):
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить из базы (Отменить)", callback_data=f"rem_{target}")]
-        ])
-        user_id_str = str(known_users.get(target, "Неизвестный"))
-        text = (
-            f"⛔ **Скамер в базе:**\n\n"
-            f"👤 **Юзернейм:** @{target}\n"
-            f"🆔 **ID:** `{user_id_str}`\n"
-            f"📝 **Причина:** {data.get('reason', 'Не указано')}\n"
-            f"👤 **Репортер ID:** `{data.get('reported_by', 'Админ')}`"
-        )
-
-        voice_id = data.get('voice_id')
-        if voice_id:
-            try:
-                await bot.send_voice(ADMIN_ID, voice=voice_id, caption="🎤 Голосовое сообщение скамера")
-            except Exception:
-                pass
-
-        photo_ids = data.get('photo_ids', [])
-        if photo_ids:
-            if len(photo_ids) > 1:
-                media = [InputMediaPhoto(media=photo_ids[0])]
-                for pid in photo_ids[1:]:
-                    media.append(InputMediaPhoto(media=pid))
-                try:
-                    await bot.send_media_group(ADMIN_ID, media=media)
-                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
-                except Exception:
-                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
-            else:
-                try:
-                    await bot.send_photo(ADMIN_ID, photo=photo_ids[0])
-                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
-                except Exception:
-                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
-        else:
-            await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
     await call.answer()
 
 @dp.message(Command('report'))
@@ -513,6 +523,14 @@ async def check_in_group(message: types.Message, bot: Bot):
                 f"ℹ️ **Статус:** В базе скама отсутствует."
             )
 
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="report", description="Подать жалобу на скамера"),
+        BotCommand(command="panel", description="Панель администратора")
+    ]
+    await bot.set_my_commands(commands)
+
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -527,6 +545,7 @@ async def web_server():
 
 async def main():
     bot = Bot(token=TOKEN)
+    await set_bot_commands(bot) # Устанавливаем кнопку меню команд
     asyncio.create_task(web_server())
     await dp.start_polling(bot)
 
