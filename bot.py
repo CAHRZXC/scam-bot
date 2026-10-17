@@ -1,42 +1,45 @@
 ﻿import asyncio
-import json
 import logging
 import os
 import sys
+import json
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FSInputFile
 from aiohttp import web
 
 TOKEN = '8802626648:AAFdxpxXFulZGe6BbeOWiJ_gAyBHVzVcH_I'
 ADMIN_ID = 8405165103
 ALLOWED_GROUP_ID = 0
 
-SCAMMERS_FILE = 'scammers.json'
-KNOWN_USERS_FILE = 'known_users.json'
+DATA_FILE = 'scammers.json'
 
-def load_data(filename):
-    if os.path.exists(filename):
+def load_local_data():
+    if os.path.exists(DATA_FILE):
         try:
-            with open(filename, 'r', encoding='utf-8') as f:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception:
-            return {}
+            pass
     return {}
 
-def save_data(filename, data):
+async def save_and_backup_data(bot: Bot):
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(scammers_db, f, ensure_ascii=False, indent=4)
+    
     try:
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+        file = FSInputFile(DATA_FILE)
+        await bot.send_document(ADMIN_ID, document=file, caption="💾 Автоматический бэкап базы скамеров")
     except Exception as e:
-        print(f"Ошибка сохранения {filename}: {e}")
+        print(f"Ошибка отправки бэкапа: {e}")
 
-scammers_db = load_data(SCAMMERS_FILE)
-known_users = load_data(KNOWN_USERS_FILE)
+scammers_db = load_local_data()
+known_users = {}
 pending_reports = {}
+bot_instance = None
 
 class ReportState(StatesGroup):
     waiting_for_photos = State()
@@ -48,6 +51,16 @@ class RemoveState(StatesGroup):
     waiting_for_reason = State()
 
 dp = Dispatcher(storage=MemoryStorage())
+
+# Восстановление базы данных, если админ скинул файл в чат
+@dp.message(F.from_user.id == ADMIN_ID, F.document)
+async def restore_database(message: types.Message, bot: Bot):
+    if message.document.file_name == 'scammers.json':
+        file_info = await bot.get_file(message.document.file_id)
+        await bot.download(file_info, destination=DATA_FILE)
+        global scammers_db
+        scammers_db = load_local_data()
+        await message.answer("✅ База данных успешно восстановлена из файла :)")
 
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
@@ -70,10 +83,9 @@ async def cmd_panel(message: types.Message):
         [InlineKeyboardButton(text=f"📩 Активные жалобы ({len(pending_reports)})", callback_data="view_pending")]
     ]
     
-    # Добавляем список скамеров кнопками прямо в панели
     if scammers_db:
         kb_buttons.append([InlineKeyboardButton(text="--- ❌ Список скамеров в базе ---", callback_data="ignore")])
-        for target in list(scammers_db.keys())[:15]: # Выводим до 15 штук для удобства
+        for target in list(scammers_db.keys())[:15]:
             kb_buttons.append([InlineKeyboardButton(text=f"@{target}", callback_data=f"scam_info_{target}")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
@@ -319,7 +331,7 @@ async def approve_report(call: types.CallbackQuery, bot: Bot):
                 'voice_id': data.get('voice_id')
             }
 
-        save_data(SCAMMERS_FILE, scammers_db)
+        await save_and_backup_data(bot)
 
         try:
             await call.message.edit_text(text=f"✅ Жалоба на {data['target']} **ПОДТВЕРЖДЕНА** и все нарушители добавлены в базу!")
@@ -330,7 +342,7 @@ async def approve_report(call: types.CallbackQuery, bot: Bot):
                 pass
 
         try:
-            await bot.send_message(data['reporter_id'], f"🎉 Ваша жалоба на {data['target']} подтверждена!")
+            await bot.send_message(data['reporter_id'], f"🎉 Ваша жалоба на {data['target']} подтверждена :)")
         except Exception:
             pass
     await call.answer()
@@ -392,7 +404,7 @@ async def process_remove_reason(message: types.Message, state: FSMContext, bot: 
 
     if target in scammers_db:
         data = scammers_db.pop(target)
-        save_data(SCAMMERS_FILE, scammers_db)
+        await save_and_backup_data(bot)
         remove_reason = message.text
 
         await message.answer(f"🗑 Пользователь @{target} успешно удален из баз скамеров.")
@@ -418,7 +430,6 @@ async def check_in_group(message: types.Message, bot: Bot):
         uname = message.from_user.username.lower()
         if uname not in known_users:
             known_users[uname] = message.from_user.id
-            save_data(KNOWN_USERS_FILE, known_users)
 
     if message.reply_to_message and message.text and (message.text.startswith('@') or message.text.lower() == 'скам'):
         target_user = message.reply_to_message.from_user
@@ -544,8 +555,11 @@ async def web_server():
     await site.start()
 
 async def main():
+    global bot_instance
     bot = Bot(token=TOKEN)
-    await set_bot_commands(bot) # Устанавливаем кнопку меню команд
+    bot_instance = bot
+    
+    await set_bot_commands(bot)
     asyncio.create_task(web_server())
     await dp.start_polling(bot)
 
