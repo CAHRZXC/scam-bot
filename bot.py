@@ -3,38 +3,88 @@ import json
 import logging
 import os
 import sys
+import gspread
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from aiohttp import web
 
 TOKEN = '8802626648:AAFdxpxXFulZGe6BbeOWiJ_gAyBHVzVcH_I'
 ADMIN_ID = 8405165103
-
 ALLOWED_GROUP_ID = 0 
 
-DB_FILE = 'scammers.json'
-USERS_FILE = 'known_users.json'
-PENDING_FILE = 'pending_reports.json'
+# Подключение к Google Таблицам через публичный доступ или сервисный аккаунт
+# Убедись, что таблица имеет права "Всем по ссылке: Редактор"
+gc = gspread.service_account(filename='credentials.json') # либо авторизация по таблице
+# Или используем простой вариант с открытым доступом по ссылке:
+# gc = gspread.oauth()
 
-def load_json(file):
-    if os.path.exists(file):
-        with open(file, 'r', encoding='utf-8') as f:
-            try:
-                return json.load(f)
-            except Exception:
-                return {}
-    return {}
+SHEET_NAME = "ScamBot DB"
 
-def save_json(file, data):
-    with open(file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+try:
+    sh = gc.open(SHEET_NAME)
+    scammers_sheet = sh.worksheet("Scammers")
+    users_sheet = sh.worksheet("KnownUsers")
+except Exception as e:
+    print(f"Ошибка подключения к таблице: {e}")
 
-scammers_db = load_json(DB_FILE)
-known_users = load_json(USERS_FILE)
-pending_reports = load_json(PENDING_FILE)
+def get_scammers_db():
+    try:
+        data = scammers_sheet.get_all_records()
+        # Превращаем в словарь для удобства
+        db = {}
+        for row in data:
+            username = row.get('Username', '').lower().replace('@', '')
+            if username:
+                db[username] = {
+                    'reason': row.get('Reason', ''),
+                    'reported_by': row.get('ReporterID', ''),
+                    'photo_ids': eval(row.get('Photos', '[]')),
+                    'voice_id': row.get('Voice', '') or None
+                }
+        return db
+    except Exception:
+        return {}
+
+def save_scammer_to_sheet(target, reason, reporter_id, photo_ids, voice_id):
+    try:
+        scammers_sheet.append_row([target, reason, str(reporter_id), str(photo_ids), str(voice_id or '')])
+    except Exception as e:
+        print(f"Ошибка записи скамера: {e}")
+
+def remove_scammer_from_sheet(target):
+    try:
+        cell = scammers_sheet.find(target)
+        if cell:
+            scammers_sheet.delete_rows(cell.row)
+    except Exception as e:
+        print(f"Ошибка удаления: {e}")
+
+def get_known_users():
+    try:
+        data = users_sheet.get_all_records()
+        users = {}
+        for row in data:
+            uname = row.get('Username', '').lower().replace('@', '')
+            uid = row.get('UserID', '')
+            if uname:
+                users[uname] = uid
+        return users
+    except Exception:
+        return {}
+
+def save_user_to_sheet(username, user_id):
+    try:
+        users_sheet.append_row([username.lower(), str(user_id)])
+    except Exception as e:
+        print(f"Ошибка сохранения юзера: {e}")
+
+scammers_db = get_scammers_db()
+known_users = get_known_users()
+pending_reports = {}
 
 class ReportState(StatesGroup):
     waiting_for_photos = State()
@@ -127,12 +177,13 @@ async def view_accepted_scammers(call: types.CallbackQuery, bot: Bot):
     if call.from_user.id != ADMIN_ID:
         return
 
-    if not scammers_db:
+    current_db = get_scammers_db()
+    if not current_db:
         await call.message.answer("❌ База скамеров пуста.")
         await call.answer()
         return
 
-    for target, data in list(scammers_db.items()):
+    for target, data in list(current_db.items()):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🗑 Удалить из базы (Отменить)", callback_data=f"rem_{target}")]
         ])
@@ -240,7 +291,6 @@ async def finish_report_callback(call: types.CallbackQuery, state: FSMContext, b
     }
 
     pending_reports[report_id] = data
-    save_json(PENDING_FILE, pending_reports)
 
     report_text = (
         f"📩 **НОВАЯ ЖАЛОБА!**\n\n"
@@ -295,20 +345,19 @@ async def approve_report(call: types.CallbackQuery, bot: Bot):
     report_id = call.data.replace('app_', '')
     if report_id in pending_reports:
         data = pending_reports.pop(report_id)
-        save_json(PENDING_FILE, pending_reports)
 
         clean_targets = data.get('clean_targets', [])
         if not clean_targets and 'target' in data:
             clean_targets = [t.strip().replace('@', '') for t in data['target'].split(',')]
 
         for t in clean_targets:
-            scammers_db[t] = {
-                'reason': data['reason'],
-                'reported_by': data['reporter_id'],
-                'photo_ids': data.get('photo_ids', []),
-                'voice_id': data.get('voice_id')
-            }
-        save_json(DB_FILE, scammers_db)
+            save_scammer_to_sheet(
+                target=t,
+                reason=data['reason'],
+                reporter_id=data['reporter_id'],
+                photo_ids=data.get('photo_ids', []),
+                voice_id=data.get('voice_id')
+            )
 
         try:
             await call.message.edit_text(text=f"✅ Жалоба на {data['target']} **ПОДТВЕРЖДЕНА** и все нарушители добавлены в базу!")
@@ -346,7 +395,6 @@ async def process_reject_reason(message: types.Message, state: FSMContext, bot: 
 
     if report_id in pending_reports:
         data = pending_reports.pop(report_id)
-        save_json(PENDING_FILE, pending_reports)
         reject_reason = message.text
 
         await message.answer(f"❌ Жалоба на {data['target']} отклонена.")
@@ -366,7 +414,8 @@ async def remove_scammer_start(call: types.CallbackQuery, state: FSMContext):
         return
 
     target = call.data.replace('rem_', '')
-    if target in scammers_db:
+    current_db = get_scammers_db()
+    if target in current_db:
         await state.update_data(remove_target=target)
         await state.set_state(RemoveState.waiting_for_reason)
         await call.message.answer(f"Введите причину удаления @{target} из баз скамеров:")
@@ -380,18 +429,19 @@ async def process_remove_reason(message: types.Message, state: FSMContext, bot: 
     user_data = await state.get_data()
     target = user_data.get('remove_target')
 
-    if target in scammers_db:
-        data = scammers_db.pop(target)
-        save_json(DB_FILE, scammers_db)
+    current_db = get_scammers_db()
+    if target in current_db:
+        data = current_db[target]
+        remove_scammer_from_sheet(target)
         remove_reason = message.text
 
         await message.answer(f"🗑 Пользователь @{target} успешно удален из баз скамеров.")
         
         reporter_id = data.get('reported_by')
-        if reporter_id and isinstance(reporter_id, int):
+        if reporter_id and str(reporter_id).isdigit():
             try:
                 await bot.send_message(
-                    reporter_id,
+                    int(reporter_id),
                     f"ℹ️ Статус вашей жалобы на @{target} был отменен админом.\n📝 **Причина удаления:** {remove_reason}"
                 )
             except Exception:
@@ -404,17 +454,21 @@ async def check_in_group(message: types.Message, bot: Bot):
     if ALLOWED_GROUP_ID != 0 and message.chat.id != ALLOWED_GROUP_ID:
         return
 
+    current_users = get_known_users()
     if message.from_user and message.from_user.username:
-        known_users[message.from_user.username.lower()] = message.from_user.id
-        save_json(USERS_FILE, known_users)
+        uname = message.from_user.username.lower()
+        if uname not in current_users:
+            save_user_to_sheet(uname, message.from_user.id)
+
+    current_db = get_scammers_db()
 
     if message.reply_to_message and message.text and (message.text.startswith('@') or message.text.lower() == 'скам'):
         target_user = message.reply_to_message.from_user
         target_username = target_user.username.lower() if target_user.username else "нет"
         target_id = target_user.id
 
-        if target_username in scammers_db:
-            scam_data = scammers_db[target_username]
+        if target_username in current_db:
+            scam_data = current_db[target_username]
             reason = scam_data.get('reason', 'Не указано')
             photo_ids = scam_data.get('photo_ids', [])
             voice_id = scam_data.get('voice_id')
@@ -460,7 +514,7 @@ async def check_in_group(message: types.Message, bot: Bot):
     if text.startswith('@') or 't.me/' in text:
         target = text.strip().replace('@', '').replace('https://t.me/', '').replace('t.me/', '').lower()
 
-        user_id_str = str(known_users.get(target, "Скрыт (еще не писал в группе)"))
+        user_id_str = str(current_users.get(target, "Скрыт (еще не писал в группе)"))
 
         if user_id_str.startswith("Скрыт"):
             try:
@@ -469,14 +523,14 @@ async def check_in_group(message: types.Message, bot: Bot):
             except Exception:
                 pass
 
-        if target in scammers_db:
-            scam_data = scammers_db[target]
+        if target in current_db:
+            scam_data = current_db[target]
             reason = scam_data.get('reason', 'Не указано')
             photo_ids = scam_data.get('photo_ids', [])
             voice_id = scam_data.get('voice_id')
             
             warning_text = (
-                f"⚠️ **ВНИМАНИЕ! ЭТО СКАМ!**\n\n"
+                f"⚠️ **ВНИМАНИЕ! ЭТО СКАН!**\n\n"
                 f"👤 **Пользователь:** @{target}\n"
                 f"🆔 **ID:** `{user_id_str}`\n"
                 f"❌ **Статус:** НАЙДЕН В БАЗЕ СКАМА\n"
@@ -510,14 +564,6 @@ async def check_in_group(message: types.Message, bot: Bot):
                 f"🆔 **ID:** `{user_id_str}`\n"
                 f"ℹ️ **Статус:** В базе скама отсутствует."
             )
-
-async def main():
-    bot = Bot(token=TOKEN)
-    await dp.start_polling(bot)
-
-if __name__ == '__main__':
-  import os
-from aiohttp import web
 
 async def handle(request):
     return web.Response(text="Bot is running!")
