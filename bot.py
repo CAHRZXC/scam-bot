@@ -52,7 +52,6 @@ class RemoveState(StatesGroup):
 
 dp = Dispatcher(storage=MemoryStorage())
 
-# Восстановление базы данных, если админ скинул файл в чат
 @dp.message(F.from_user.id == ADMIN_ID, F.document)
 async def restore_database(message: types.Message, bot: Bot):
     if message.document.file_name == 'scammers.json':
@@ -431,57 +430,43 @@ async def check_in_group(message: types.Message, bot: Bot):
         if uname not in known_users:
             known_users[uname] = message.from_user.id
 
-    if message.reply_to_message and message.text and (message.text.startswith('@') or message.text.lower() == 'скам'):
-        target_user = message.reply_to_message.from_user
-        target_username = target_user.username.lower() if target_user.username else "нет"
-        target_id = target_user.id
-
-        if target_username in scammers_db:
-            scam_data = scammers_db[target_username]
-            reason = scam_data.get('reason', 'Не указано')
-            photo_ids = scam_data.get('photo_ids', [])
-            voice_id = scam_data.get('voice_id')
-
-            warning_text = (
-                f"⚠️ **ВНИМАНИЕ! ЭТО СКАМЕР!**\n\n"
-                f"👤 **Пользователь:** @{target_username}\n"
-                f"🆔 **ID:** `{target_id}`\n"
-                f"❌ **Статус:** НАЙДЕН В БАЗЕ СКАМА\n"
-                f"📝 **Причина:** {reason}"
-            )
-
-            if voice_id:
-                try:
-                    await message.reply_voice(voice=voice_id, caption="🎤 Голосовое доказательство")
-                except Exception:
-                    pass
-
-            if photo_ids:
-                if len(photo_ids) > 1:
-                    media = [InputMediaPhoto(media=photo_ids[0])]
-                    for pid in photo_ids[1:]:
-                        media.append(InputMediaPhoto(media=pid))
-                    try:
-                        await message.reply_media_group(media=media)
-                        await message.reply(warning_text)
-                    except Exception:
-                        await message.reply(warning_text)
-                else:
-                    await message.reply_photo(photo=photo_ids[0], caption=warning_text)
-            else:
-                await message.reply(warning_text)
-        else:
-            await message.reply(
-                f"✅ **ПРОВЕРКА ПРОЙДЕНА**\n\n"
-                f"👤 **Пользователь:** @{target_username}\n"
-                f"🆔 **ID:** `{target_id}`\n"
-                f"ℹ️ **Статус:** В базе скама отсутствует."
-            )
-        return
-
     text = message.text or message.caption or ""
-    if text.startswith('@') or 't.me/' in text:
-        target = text.strip().replace('@', '').replace('https://t.me/', '').replace('t.me/', '').lower()
+    target = None
+
+    # Достаем точный юзернейм из сущностей Telegram (mentions, text_mention, url)
+    if message.entities:
+        for entity in message.entities:
+            if entity.type == 'mention':
+                # Вырезаем именно указанный @username из текста
+                target = text[entity.offset:entity.offset + entity.length].replace('@', '').strip().lower()
+                break
+            elif entity.type == 'url':
+                url_text = text[entity.offset:entity.offset + entity.length]
+                if 't.me/' in url_text:
+                    target = url_text.split('t.me/')[-1].replace('/', '').strip().lower()
+                    break
+
+    # Если Telegram-entities не сработали, парсим через разделение слов
+    if not target:
+        words = text.split()
+        for w in words:
+            clean_word = w.strip().strip(".,!?()[]{}")
+            if clean_word.startswith('@'):
+                target = clean_word.replace('@', '').lower()
+                break
+            elif 't.me/' in clean_word:
+                target = clean_word.split('t.me/')[-1].replace('/', '').lower()
+                break
+
+    # Если в тексте не было юзернейма, но сделан ответ с текстом "скам"
+    if not target and message.reply_to_message and message.reply_to_message.from_user:
+        if text.lower().strip() == 'скам' or text.lower().startswith('скам'):
+            if message.reply_to_message.from_user.username:
+                target = message.reply_to_message.from_user.username.lower()
+
+    if target:
+        # Очищаем юзернейм от случайных символов
+        target = target.strip(".,!?()[]{}")
 
         user_id_str = str(known_users.get(target, "Скрыт (еще не писал в группе)"))
 
