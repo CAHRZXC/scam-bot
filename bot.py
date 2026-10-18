@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FSInputFile
 from aiohttp import web
 
-TOKEN = '8802626648:AAFdxpxXFulZGe6BbeOWiJ_gAyBHVzVcH_I'
+TOKEN = '8802626648:AAHnsQSFsY8gT9LItYaJmCCX2B6ZxsMtOZY'
 ADMIN_ID = 8405165103
 ALLOWED_GROUP_ID = 0
 
