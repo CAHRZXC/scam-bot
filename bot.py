@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FSInputFile
 from aiohttp import web
 
-TOKEN = '8802626648:AAHnsQSFsY8gT9LItYaJmCCX2B6ZxsMtOZY'
+TOKEN = '8802626648:AAHYegmfNfmTSQoXIYkLL3Mu3Ok-QrEZI2Q'
 ADMIN_ID = 8405165103
 ALLOWED_GROUP_ID = 0
 
@@ -433,11 +433,9 @@ async def check_in_group(message: types.Message, bot: Bot):
     text = message.text or message.caption or ""
     target = None
 
-    # Достаем точный юзернейм из сущностей Telegram (mentions, text_mention, url)
     if message.entities:
         for entity in message.entities:
             if entity.type == 'mention':
-                # Вырезаем именно указанный @username из текста
                 target = text[entity.offset:entity.offset + entity.length].replace('@', '').strip().lower()
                 break
             elif entity.type == 'url':
@@ -446,7 +444,6 @@ async def check_in_group(message: types.Message, bot: Bot):
                     target = url_text.split('t.me/')[-1].replace('/', '').strip().lower()
                     break
 
-    # Если Telegram-entities не сработали, парсим через разделение слов
     if not target:
         words = text.split()
         for w in words:
@@ -458,14 +455,12 @@ async def check_in_group(message: types.Message, bot: Bot):
                 target = clean_word.split('t.me/')[-1].replace('/', '').lower()
                 break
 
-    # Если в тексте не было юзернейма, но сделан ответ с текстом "скам"
     if not target and message.reply_to_message and message.reply_to_message.from_user:
         if text.lower().strip() == 'скам' or text.lower().startswith('скам'):
             if message.reply_to_message.from_user.username:
                 target = message.reply_to_message.from_user.username.lower()
 
     if target:
-        # Очищаем юзернейм от случайных символов
         target = target.strip(".,!?()[]{}")
 
         user_id_str = str(known_users.get(target, "Скрыт (еще не писал в группе)"))
