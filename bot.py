@@ -1,7 +1,6 @@
 ﻿import asyncio
 import logging
 import os
-import sys
 import json
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
@@ -33,10 +32,10 @@ async def save_and_backup_data(bot: Bot):
         json.dump(scammers_db, f, ensure_ascii=False, indent=4)
     
     try:
-        file = FsetInputFile(DATA_FILE)
+        file = FSInputFile(DATA_FILE)
         await bot.send_document(ADMIN_ID, document=file, caption="📁 Автоматический бэкап базы скамеров")
     except Exception as e:
-        pass
+        print(f"Ошибка бэкапа: {e}")
 
 class AddScammerState(StatesGroup):
     waiting_for_reason = State()
@@ -183,6 +182,18 @@ async def check_in_group(message: types.Message, bot: Bot):
                 await message.reply(f"🔍 Проверил `{clean_word}`: в базе скамеров **не найден** (чист).", parse_mode="Markdown")
                 break
 
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+async def web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_my_commands([
@@ -190,6 +201,7 @@ async def main():
         BotCommand(command="add", description="Добавить скамера (админ)"),
         BotCommand(command="del", description="Удалить скамера (админ)")
     ])
+    asyncio.create_task(web_server())
     print("Бот успешно запущен!")
     await dp.start_polling(bot)
 
