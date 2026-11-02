@@ -8,10 +8,10 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FSInputFile
-from aiohttp import web
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FsetInputFile
+from aioport import web
 
-TOKEN = '8802626648:AAHYegmfNfmTSQoXIYkLL3Mu3Ok-QrEZI2Q'
+TOKEN = '88026648:AAHYegmfNfmTSQoXIYKLL3Mu30k-QreZI2Q'
 ADMIN_ID = 8405165103
 ALLOWED_GROUP_ID = 0
 
@@ -26,524 +26,172 @@ def load_local_data():
             pass
     return {}
 
+scammers_db = load_local_data()
+
 async def save_and_backup_data(bot: Bot):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(scammers_db, f, ensure_ascii=False, indent=4)
     
     try:
-        file = FSInputFile(DATA_FILE)
-        await bot.send_document(ADMIN_ID, document=file, caption="💾 Автоматический бэкап базы скамеров")
+        file = FsetInputFile(DATA_FILE)
+        await bot.send_document(ADMIN_ID, document=file, caption="📁 Автоматический бэкап базы скамеров")
     except Exception as e:
-        print(f"Ошибка отправки бэкапа: {e}")
-
-scammers_db = load_local_data()
-known_users = {}
-pending_reports = {}
-bot_instance = None
-
-class ReportState(StatesGroup):
-    waiting_for_photos = State()
-
-class RejectState(StatesGroup):
-    waiting_for_reason = State()
-
-class RemoveState(StatesGroup):
-    waiting_for_reason = State()
-
-dp = Dispatcher(storage=MemoryStorage())
-
-@dp.message(F.from_user.id == ADMIN_ID, F.document)
-async def restore_database(message: types.Message, bot: Bot):
-    if message.document.file_name == 'scammers.json':
-        file_info = await bot.get_file(message.document.file_id)
-        await bot.download(file_info, destination=DATA_FILE)
-        global scammers_db
-        scammers_db = load_local_data()
-        await message.answer("✅ База данных успешно восстановлена из файла :)")
-
-@dp.message(Command('start'))
-async def cmd_start(message: types.Message):
-    if message.chat.type == 'private':
-        text = (
-            "Привет! Я бот **Scam ID**.\n\n"
-            "• Чтобы проверить человека, отправь его `@username`, `ID` или сделай **Reply (Ответ)** на его сообщение в группе.\n"
-            "• Чтобы подать жалобу, напиши: `/report @username ID Причина`"
-        )
-        if message.from_user.id == ADMIN_ID:
-            text += "\n\n👑 **Панель админа:** Напиши /panel для управления жалобами."
-        await message.answer(text)
-
-@dp.message(Command('panel'))
-async def cmd_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    kb_buttons = [
-        [InlineKeyboardButton(text=f"📩 Активные жалобы ({len(pending_reports)})", callback_data="view_pending")]
-    ]
-    
-    if scammers_db:
-        kb_buttons.append([InlineKeyboardButton(text="--- ❌ Список скамеров в базе ---", callback_data="ignore")])
-        for target in list(scammers_db.keys())[:15]:
-            kb_buttons.append([InlineKeyboardButton(text=f"{target}", callback_data=f"scam_info_{target}")])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
-    await message.answer("⚙️ **Панель управления админа:**\nВыбери скамера из списка ниже, чтобы посмотреть его жалобу и доказательства:", reply_markup=kb)
-
-@dp.callback_query(F.data.startswith('scam_info_'))
-async def show_scammer_details(call: types.CallbackQuery, bot: Bot):
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    target = call.data.replace('scam_info_', '')
-    if target in scammers_db:
-        data = scammers_db[target]
-        user_id_str = str(known_users.get(target, "Неизвестный"))
-        
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить из базы", callback_data=f"rem_{target}")]
-        ])
-        
-        text = (
-            f"⛔ **Информация о скамере:**\n\n"
-            f"👤 **Цель:** {target}\n"
-            f"🆔 **ID:** `{user_id_str}`\n"
-            f"📝 **Причина:** {data.get('reason', 'Не указано')}\n"
-            f"👤 **Репортер ID:** `{data.get('reported_by', 'Админ')}`"
-        )
-
-        voice_id = data.get('voice_id')
-        if voice_id:
-            try:
-                await bot.send_voice(ADMIN_ID, voice=voice_id, caption="🎤 Голосовое доказательство")
-            except Exception:
-                pass
-
-        photo_ids = data.get('photo_ids', [])
-        if photo_ids:
-            if len(photo_ids) > 1:
-                media = [InputMediaPhoto(media=photo_ids[0])]
-                for pid in photo_ids[1:]:
-                    media.append(InputMediaPhoto(media=pid))
-                try:
-                    await bot.send_media_group(ADMIN_ID, media=media)
-                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
-                except Exception:
-                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
-            else:
-                try:
-                    await bot.send_photo(ADMIN_ID, photo=photo_ids[0], caption=text, reply_markup=kb)
-                except Exception:
-                    await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
-        else:
-            await bot.send_message(ADMIN_ID, text=text, reply_markup=kb)
-            
-    await call.answer()
-
-@dp.callback_query(F.data == "ignore")
-async def ignore_callback(call: types.CallbackQuery):
-    await call.answer()
-
-@dp.callback_query(F.data == "view_pending")
-async def view_pending_reports(call: types.CallbackQuery, bot: Bot):
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    if not pending_reports:
-        await call.message.answer("📩 Нет активных жалоб в очереди.")
-        await call.answer()
-        return
-
-    for report_id, data in list(pending_reports.items()):
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"app_{report_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"rej_{report_id}")
-            ]
-        ])
-        report_text = (
-            f"📋 **Жалоба в очереди:**\n\n"
-            f"👤 **От кого:** {data['reporter_name']} (`{data['reporter_id']}`)\n"
-            f"🎯 **На кого:** {data['target']}\n"
-            f"📝 **Причина:** {data['reason']}"
-        )
-
-        voice_id = data.get('voice_id')
-        if voice_id:
-            try:
-                await bot.send_voice(ADMIN_ID, voice=voice_id, caption="🎤 Голосовое сообщение от репортера")
-            except Exception:
-                pass
-
-        photo_ids = data.get('photo_ids', [])
-        if photo_ids:
-            if len(photo_ids) > 1:
-                media = [InputMediaPhoto(media=photo_ids[0])]
-                for pid in photo_ids[1:]:
-                    media.append(InputMediaPhoto(media=pid))
-                try:
-                    await bot.send_media_group(ADMIN_ID, media=media)
-                    await bot.send_message(ADMIN_ID, text=report_text, reply_markup=kb)
-                except Exception:
-                    await bot.send_message(ADMIN_ID, text=report_text, reply_markup=kb)
-            else:
-                try:
-                    await bot.send_photo(ADMIN_ID, photo=photo_ids[0])
-                    await bot.send_message(ADMIN_ID, text=report_text, reply_markup=kb)
-                except Exception:
-                    await bot.send_message(ADMIN_ID, text=report_text, reply_markup=kb)
-        else:
-            await bot.send_message(ADMIN_ID, text=report_text, reply_markup=kb)
-    await call.answer()
-
-@dp.message(Command('report'))
-async def cmd_report(message: types.Message, command: CommandObject, state: FSMContext):
-    caption_or_text = message.caption or message.text or ""
-    words = caption_or_text.split()
-
-    raw_targets = [w.replace(',', '').strip() for w in words if w.startswith('@') or (w.isdigit() and 5 <= len(w) <= 12)]
-
-    if not raw_targets:
-        await message.answer("Ошибка! Укажи юзернейм (@username) или ID нарушителя, например: `/report @username 123456789 Причина`")
-        return
-
-    clean_targets = [t.replace('@', '').replace('https://t.me/', '').replace('t.me/', '').lower() for t in raw_targets]
-    formatted_target = ", ".join([f"@{t}" if not t.isdigit() else f"ID: {t}" for t in clean_targets])
-
-    reason_parts = [w for w in words if w != '/report' and w.replace(',', '').strip() not in raw_targets]
-    reason = " ".join(reason_parts).strip()
-    if not reason:
-        reason = "Без причины"
-
-    await state.update_data(target=formatted_target, clean_targets=clean_targets, reason=reason, photo_ids=[], voice_id=None)
-    await state.set_state(ReportState.waiting_for_photos)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Готово (Отправить жалобу)", callback_data="finish_report")]
-    ])
-
-    await message.answer(
-        f"🎯 Нарушители: **{formatted_target}**\n"
-        f"📝 Причина: {reason}\n\n"
-        "📸 Теперь отправь скриншоты-доказательства или 🎤 **голосовое сообщение**.\n"
-        "Когда закончишь, нажми кнопку **«Готово»** ниже:",
-        reply_markup=kb
-    )
-
-@dp.message(ReportState.waiting_for_photos, F.photo)
-async def process_report_photos(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    photo_ids = user_data.get('photo_ids', [])
-    photo_ids.append(message.photo[-1].file_id)
-    await state.update_data(photo_ids=photo_ids)
-
-@dp.message(ReportState.waiting_for_photos, F.voice)
-async def process_report_voice(message: types.Message, state: FSMContext):
-    await state.update_data(voice_id=message.voice.file_id)
-    await message.answer("🎤 Голосовое сообщение принято! Можешь докинуть скриншоты или нажать кнопку **«Готово»**.")
-
-@dp.callback_query(ReportState.waiting_for_photos, F.data == "finish_report")
-async def finish_report_callback(call: types.CallbackQuery, state: FSMContext, bot: Bot):
-    user_data = await state.get_data()
-    target = user_data['target']
-    clean_targets = user_data.get('clean_targets', [])
-    reason = user_data['reason']
-    photo_ids = user_data.get('photo_ids', [])
-    voice_id = user_data.get('voice_id')
-
-    report_id = f"{call.from_user.id}_{clean_targets[0] if clean_targets else 'scam'}"
-    data = {
-        'target': target,
-        'clean_targets': clean_targets,
-        'reason': reason,
-        'reporter_id': call.from_user.id,
-        'reporter_name': call.from_user.full_name,
-        'photo_ids': photo_ids,
-        'voice_id': voice_id
-    }
-
-    pending_reports[report_id] = data
-
-    report_text = (
-        f"📩 **НОВАЯ ЖАЛОБА!**\n\n"
-        f"👤 **От кого:** {data['reporter_name']} (`{data['reporter_id']}`)\n"
-        f"🎯 **На кого:** {data['target']}\n"
-        f"📝 **Причина:** {data['reason']}"
-    )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"app_{report_id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"rej_{report_id}")
-        ]
-    ])
-
-    if voice_id:
-        try:
-            await bot.send_voice(ADMIN_ID, voice=voice_id, caption="🎤 Голосовое сообщение от репортера")
-        except Exception:
-            pass
-
-    if photo_ids:
-        if len(photo_ids) > 1:
-            media = [InputMediaPhoto(media=photo_ids[0])]
-            for pid in photo_ids[1:]:
-                media.append(InputMediaPhoto(media=pid))
-            try:
-                await bot.send_media_group(ADMIN_ID, media=media)
-            except Exception:
-                pass
-        else:
-            try:
-                await bot.send_photo(ADMIN_ID, photo=photo_ids[0])
-            except Exception:
-                pass
-
-    await bot.send_message(ADMIN_ID, text=report_text, reply_markup=kb)
-
-    try:
-        await call.message.edit_text("🎉 Ваша жалоба со всеми доказательствами успешно отправлена администратору на проверку!")
-    except Exception:
         pass
 
-    await state.clear()
-    await call.answer()
+class AddScammerState(StatesGroup):
+    waiting_for_reason = State()
+    waiting_for_media = State()
 
-@dp.callback_query(F.data.startswith('app_'))
-async def approve_report(call: types.CallbackQuery, bot: Bot):
-    if call.from_user.id != ADMIN_ID:
-        return
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 
-    report_id = call.data.replace('app_', '')
-    if report_id in pending_reports:
-        data = pending_reports.pop(report_id)
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "👋 Привет! Я бот для проверки и ведения базы скамеров.\n\n"
+        "📌 **Как я работаю:**\n"
+        "• Напиши в группе юзернейм (например, `@username`) или ID, и я сразу проверю его по базе.\n"
+        "• Если человек есть в базе — я выдам предупреждение.\n"
+        "• Если человека нет в базе — я напишу, что он чист.\n\n"
+        "👑 **Команды для админа:**\n"
+        "• `/add @username Причина` — добавить скамера\n"
+        "• `/del @username` — удалить из базы"
+    )
 
-        clean_targets = data.get('clean_targets', [])
-        for t in clean_targets:
-            key = f"id_{t}" if t.isdigit() else t
-            scammers_db[key] = {
-                'reason': data['reason'],
-                'reported_by': data['reporter_id'],
-                'photo_ids': data.get('photo_ids', []),
-                'voice_id': data.get('voice_id')
-            }
-
-        await save_and_backup_data(bot)
-
-        try:
-            await call.message.edit_text(text=f"✅ Жалоба на {data['target']} **ПОДТВЕРЖДЕНА** и все нарушители добавлены в базу!")
-        except Exception:
-            try:
-                await call.message.edit_caption(caption=f"✅ Жалоба на {data['target']} **ПОДТВЕРЖДЕНА** и все нарушители добавлены в базу!")
-            except Exception:
-                pass
-
-        try:
-            await bot.send_message(data['reporter_id'], f"🎉 Ваша жалоба на {data['target']} подтверждена :)")
-        except Exception:
-            pass
-    await call.answer()
-
-@dp.callback_query(F.data.startswith('rej_'))
-async def reject_report_start(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-
-    report_id = call.data.replace('rej_', '')
-    if report_id in pending_reports:
-        await state.update_data(reject_report_id=report_id)
-        await state.set_state(RejectState.waiting_for_reason)
-        await call.message.answer("Введите причину отклонения жалобы:")
-    await call.answer()
-
-@dp.message(RejectState.waiting_for_reason)
-async def process_reject_reason(message: types.Message, state: FSMContext, bot: Bot):
+@dp.message(Command("add"))
+async def cmd_add(message: types.Message, command: CommandObject, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-
-    user_data = await state.get_data()
-    report_id = user_data.get('reject_report_id')
-
-    if report_id in pending_reports:
-        data = pending_reports.pop(report_id)
-        reject_reason = message.text
-
-        await message.answer(f"❌ Жалоба на {data['target']} отклонена.")
-        try:
-            await bot.send_message(
-                data['reporter_id'],
-                f"❌ Ваша жалоба на {data['target']} отклонена.\n📝 **Причина:** {reject_reason}"
-            )
-        except Exception:
-            pass
-
-    await state.clear()
-
-@dp.callback_query(F.data.startswith('rem_'))
-async def remove_scammer_start(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    
+    if not command.args:
+        await message.answer("❌ Использование: `/add @username Причина` или `/add ID Причина`")
         return
+    
+    args = command.args.split(maxsplit=1)
+    target = args[0].strip()
+    reason = args[1].strip() if len(args) > 1 else "Причина не указана"
+    
+    await state.update_data(target=target, reason=reason, media=[])
+    await message.answer(f"📝 Цель: `{target}`\nПричина: {reason}\n\n📸 Теперь отправь скриншоты или голосовые (доказательства). Когда закончишь, отправь команду `/done`.")
+    await state.set_state(AddScammerState.waiting_for_media)
 
-    target = call.data.replace('rem_', '')
-    if target in scammers_db:
-        await state.update_data(remove_target=target)
-        await state.set_state(RemoveState.waiting_for_reason)
-        await call.message.answer(f"Введите причину удаления {target} из базы скамеров:")
-    await call.answer()
-
-@dp.message(RemoveState.waiting_for_reason)
-async def process_remove_reason(message: types.Message, state: FSMContext, bot: Bot):
+@dp.message(AddScammerState.waiting_for_media, F.photo)
+async def process_media_photo(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    data = await state.get_data()
+    media_list = data.get("media", [])
+    photo = message.photo[-1].file_id
+    media_list.append({"type": "photo", "file_id": photo})
+    await state.update_data(media=media_list)
+    await message.answer(f"✅ Фото добавлено ({len(media_list)} шт.). Отправь еще или напиши `/done`.")
 
-    user_data = await state.get_data()
-    target = user_data.get('remove_target')
+@dp.message(AddScammerState.waiting_for_media, F.voice)
+async def process_media_voice(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    media_list = data.get("media", [])
+    voice = message.voice.file_id
+    media_list.append({"type": "voice", "file_id": voice})
+    await state.update_data(media=media_list)
+    await message.answer(f"✅ Голосовое добавлено. Отправь еще файлы или напиши `/done`.")
 
-    if target in scammers_db:
-        data = scammers_db.pop(target)
-        await save_and_backup_data(bot)
-        remove_reason = message.text
-
-        await message.answer(f"🗑 Пользователь {target} успешно удален из базы скамеров.")
-
-        reporter_id = data.get('reported_by')
-        if reporter_id and str(reporter_id).isdigit():
-            try:
-                await bot.send_message(
-                    int(reporter_id),
-                    f"ℹ️ Статус вашей жалобы на {target} был отменен админом.\n📝 **Причина удаления:** {remove_reason}"
-                )
-            except Exception:
-                pass
-
+@dp.message(AddScammerState.waiting_for_media, Command("done"))
+async def process_done(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    target = data.get("target")
+    reason = data.get("reason")
+    media = data.get("media", [])
+    
+    scammers_db[target] = {
+        "reason": reason,
+        "media": media
+    }
+    await save_and_backup_data(message.bot)
     await state.clear()
+    await message.answer(f"🎉 Пользователь `{target}` успешно добавлен в базу скамеров!")
+
+@dp.message(Command("del"))
+async def cmd_del(message: types.Message, command: CommandObject):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not command.args:
+        await message.answer("❌ Укажи юзернейм или ID для удаления: `/del @username`")
+        return
+    
+    target = command.args.strip()
+    if target in scammers_db:
+        del scammers_db[target]
+        await save_and_backup_data(message.bot)
+        await message.answer(f"🗑 Пользователь `{target}` удален из базы.")
+    else:
+        await message.answer(f"❌ Пользователь `{target}` не найден в базе.")
 
 @dp.message(F.chat.type.in_({'group', 'supergroup'}))
 async def check_in_group(message: types.Message, bot: Bot):
     if ALLOWED_GROUP_ID != 0 and message.chat.id != ALLOWED_GROUP_ID:
         return
-
-    if message.from_user and message.from_user.username:
-        uname = message.from_user.username.lower()
-        if uname not in known_users:
-            known_users[uname] = message.from_user.id
-
+    
     text = message.text or message.caption or ""
-    target = None
-    target_id = None
+    if not text:
+        return
 
-    if message.entities:
-        for entity in message.entities:
-            if entity.type == 'mention':
-                target = text[entity.offset:entity.offset + entity.length].replace('@', '').strip().lower()
-                break
-            elif entity.type == 'url':
-                url_text = text[entity.offset:entity.offset + entity.length]
-                if 't.me/' in url_text:
-                    target = url_text.split('t.me/')[-1].replace('/', '').strip().lower()
-                    break
-
-    if not target:
-        words = text.split()
-        for w in words:
-            clean_word = w.strip().strip(".,!?()[]{}")
-            if clean_word.startswith('@'):
-                target = clean_word.replace('@', '').lower()
-                break
-            elif 't.me/' in clean_word:
-                target = clean_word.split('t.me/')[-1].replace('/', '').lower()
-                break
-            elif clean_word.isdigit() and 5 <= len(clean_word) <= 12:
-                target_id = clean_word
+    words = text.split()
+    found_target = None
+    
+    for word in words:
+        clean_word = word.strip(",.!?;:()[]{}*\"'")
+        if clean_word.startswith("@") or clean_word.isdigit():
+            if clean_word in scammers_db:
+                found_target = clean_word
                 break
 
-    if not target and not target_id and message.reply_to_message and message.reply_to_message.from_user:
-        if text.lower().strip() == 'скам' or text.lower().startswith('скам'):
-            reply_user = message.reply_to_message.from_user
-            target_id = str(reply_user.id)
-            if reply_user.username:
-                target = reply_user.username.lower()
-
-    found_scam = None
-    scam_key = None
-
-    if target and target in scammers_db:
-        found_scam = scammers_db[target]
-        scam_key = f"@{target}"
-    elif target_id:
-        id_key = f"id_{target_id}"
-        if id_key in scammers_db:
-            found_scam = scammers_db[id_key]
-            scam_key = f"ID: {target_id}"
-        else:
-            for k, v in scammers_db.items():
-                if str(v.get('reported_by')) == target_id or str(known_users.get(k)) == target_id:
-                    found_scam = v
-                    scam_key = f"ID: {target_id}"
-                    break
-
-    if found_scam:
-        reason = found_scam.get('reason', 'Не указано')
-        photo_ids = found_scam.get('photo_ids', [])
-        voice_id = found_scam.get('voice_id')
-
+    if found_target:
+        data = scammers_db[found_target]
+        reason = data.get("reason", "Причина не указана")
+        media = data.get("media", [])
+        
         warning_text = (
             f"⚠️ **ВНИМАНИЕ! ЭТО СКАМЕР!**\n\n"
-            f"🎯 **Нарушитель:** {scam_key}\n"
+            f"🎯 **Нарушитель:** {found_target}\n"
             f"❌ **Статус:** НАЙДЕН В БАЗЕ СКАМА\n"
             f"📝 **Причина:** {reason}"
         )
-
-        if voice_id:
-            try:
-                await message.reply_voice(voice=voice_id, caption="🎤 Голосовое доказательство")
-            except Exception:
-                pass
-
-        if photo_ids:
-            if len(photo_ids) > 1:
-                media = [InputMediaPhoto(media=photo_ids[0])]
-                for pid in photo_ids[1:]:
-                    media.append(InputMediaPhoto(media=pid))
-                try:
-                    await message.reply_media_group(media=media)
-                    await message.reply(warning_text)
-                except Exception:
-                    await message.reply(warning_text)
-            else:
-                await message.reply_photo(photo=photo_ids[0], caption=warning_text)
+        
+        if media:
+            first_item = media[0]
+            if first_item["type"] == "photo":
+                media_group = [InputMediaPhoto(media=first_item["file_id"], caption=warning_text, parse_mode="Markdown")]
+                for m in media[1:]:
+                    if m["type"] == "photo":
+                        media_group.append(InputMediaPhoto(media=m["file_id"]))
+                await message.reply_album(media=media_group)
+            elif first_item["type"] == "voice":
+                await message.reply(warning_text, parse_mode="Markdown")
+                await message.reply_voice(voice=first_item["file_id"])
         else:
-            await message.reply(warning_text)
-
-async def set_bot_commands(bot: Bot):
-    commands = [
-        BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="report", description="Подать жалобу на скамера"),
-        BotCommand(command="panel", description="Панель администратора")
-    ]
-    await bot.set_my_commands(commands)
-
-async def handle(request):
-    return web.Response(text="Bot is running!")
-
-async def web_server():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
+            await message.reply(warning_text, parse_mode="Markdown")
+    else:
+        for word in words:
+            clean_word = word.strip(",.!?;:()[]{}*\"'")
+            if clean_word.startswith("@"):
+                await message.reply(f"🔍 Проверил `{clean_word}`: в базе скамеров **не найден** (чист).", parse_mode="Markdown")
+                break
 
 async def main():
-    global bot_instance
-    bot = Bot(token=TOKEN)
-    bot_instance = bot
-    
-    await set_bot_commands(bot)
-    asyncio.create_task(web_server())
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="add", description="Добавить скамера (админ)"),
+        BotCommand(command="del", description="Удалить скамера (админ)")
+    ])
+    print("Бот успешно запущен!")
     await dp.start_polling(bot)
 
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+if __name__ == "__main__":
     asyncio.run(main())
