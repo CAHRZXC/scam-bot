@@ -8,7 +8,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FsetInputFile
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FSInputFile
 from aiohttp import web
 
 TOKEN = '88026648:AAHYegmfNfmTSQoXIYKLL3Mu30k-QreZI2Q'
