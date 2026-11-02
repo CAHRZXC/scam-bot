@@ -8,7 +8,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FSInputFile
-from aiohttp import web
 
 TOKEN = '88026648:AAHYegmfNfmTSQoXIYKLL3Mu30k-QreZI2Q'
 ADMIN_ID = 8405165103
@@ -182,18 +181,6 @@ async def check_in_group(message: types.Message, bot: Bot):
                 await message.reply(f"🔍 Проверил `{clean_word}`: в базе скамеров **не найден** (чист).", parse_mode="Markdown")
                 break
 
-async def handle(request):
-    return web.Response(text="Bot is running!")
-
-async def web_server():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_my_commands([
@@ -201,7 +188,6 @@ async def main():
         BotCommand(command="add", description="Добавить скамера (админ)"),
         BotCommand(command="del", description="Удалить скамера (админ)")
     ])
-    asyncio.create_task(web_server())
     print("Бот успешно запущен!")
     await dp.start_polling(bot)
 
