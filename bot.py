@@ -9,7 +9,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand, FSInputFile
 
-TOKEN = '88026648:AAHYegmfNfmTSQoXIYKLL3Mu30k-QreZI2Q'
+TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 8405165103
 ALLOWED_GROUP_ID = 0
 
