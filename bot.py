@@ -5,6 +5,7 @@ import os
 import sys
 from aiohttp import web
 from telethon import Button, TelegramClient, events
+from telethon.sessions import StringSession
 
 API_ID = 39070752
 API_HASH = "a7f4346ee8e737e2c176d557a1e8df32"
@@ -33,7 +34,8 @@ scammers_db = load_json(DATA_FILE)
 allowed_groups = load_json(GROUPS_FILE)
 
 logging.basicConfig(level=logging.INFO)
-client = TelegramClient("userbot", API_ID, API_HASH)
+session_string = os.environ.get("SESSION_STRING")
+client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
 
 
 @client.on(events.NewMessage(pattern=r"^/add (.+)"))
