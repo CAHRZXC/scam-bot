@@ -38,7 +38,7 @@ session_string = os.environ.get("SESSION_STRING")
 client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
 
 
-@client.on(events.NewMessage(pattern=r"^/add (.+)", outgoing=True))
+@client.on(events.NewMessage(pattern=r"^/add(?:\s+(.+))?", outgoing=True))
 async def add_scammer(event):
   if event.sender_id != ADMIN_ID:
     return
