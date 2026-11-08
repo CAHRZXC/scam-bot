@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 from aiohttp import web
-from telethon import TelegramClient, events, Button
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 API_ID = 39070752
@@ -31,11 +31,9 @@ allowed_groups = load_json(GROUPS_FILE)
 
 logging.basicConfig(level=logging.INFO)
 
-# Инициализация сессии из переменной окружения Render
 session_string = os.environ.get("SESSION_STRING")
 client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
 
-# Декоратор подхватывает И исходящие (от тебя), И входящие сообщения
 @client.on(events.NewMessage(pattern=r"^/add", outgoing=True))
 async def add_scammer(event):
     if event.sender_id != ADMIN_ID:
@@ -54,7 +52,6 @@ async def add_scammer(event):
     save_json(DATA_FILE, scammers_db)
     await event.respond(f"Пользователь {target} добавлен в базу!")
 
-# Веб-сервер для поддержания работы на Render
 async def handle_ping(request):
     return web.Response(text="Bot is running!")
 
