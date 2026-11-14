@@ -43,11 +43,11 @@ async def add_scammer(event):
     if len(args) < 2:
         await event.respond("Использование: /add <username/id> | <причина> [| пруфы]")
         return
-    
+
     target = args[0].strip()
     reason = args[1].strip()
     proof = args[2].strip() if len(args) > 2 else "Нет пруфов"
-    
+
     scammers_db[target] = {"reason": reason, "proof": proof}
     save_json(DATA_FILE, scammers_db)
     await event.respond(f"Пользователь {target} добавлен в базу!")
