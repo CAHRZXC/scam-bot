@@ -34,28 +34,7 @@ logging.basicConfig(level=logging.INFO)
 session_string = os.environ.get("SESSION_STRING")
 client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
 
-@client.on(events.NewMessage)
-async def handle_commands(event):
-    # Проверяем, что сообщение написал именно ты (и в личке, и в Избранном)
-    if event.sender_id != ADMIN_ID:
-        return
-    
-    if not event.text or not event.text.startswith("/add"):
-        return
-
-    text = event.text.replace("/add", "").strip()
-    args = text.split("|")
-    if len(args) < 2:
-        await event.respond("Использование: /add <username/id> | <причина> [| пруфы]")
-        return
-    
-    target = args[0].strip()
-    reason = args[1].strip()
-    proof = args[2].strip() if len(args) > 2 else "Нет пруфов"
-    
-    scammers_db[target] = {"reason": reason, "proof": proof}
-    save_json(DATA_FILE, scammers_db)
-    await event.respond(f"Пользователь {target} добавлен в базу!")
+@client.on(events.NewMessage(pattern=r"^/add", outgoing=True))
 async def add_scammer(event):
     if event.sender_id != ADMIN_ID:
         return
