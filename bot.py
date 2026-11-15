@@ -2,8 +2,9 @@
 import json
 import logging
 from aiohttp import web
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 TOKEN = "8802626648:AAHYegmfNfmTSQoXIYkLL3Mu3Ok-QrEZI2Q"
 ADMIN_ID = 8405165103
@@ -29,6 +30,56 @@ logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+# Главное меню с кнопками
+def get_main_menu():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Список мошенников", callback_data="list_scammers")
+    builder.button(text="Статистика базы", callback_data="stats")
+    builder.adjust(1)
+    return builder.as_markup()
+
+@dp.message(Command("start", "menu"))
+async def cmd_menu(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("Панель управления базом мошенников:", reply_markup=get_main_menu())
+
+@dp.callback_query(F.data == "stats")
+async def show_stats(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    count = len(scammers_db)
+    await callback.message.edit_text(
+        f"Статистика:\nВсего записей в базе: {count}",
+        reply_markup=get_main_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "list_scammers")
+async def show_list(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    
+    if not scammers_db:
+        text = "База мошенников пока пуста."
+    else:
+        text = "Список мошенников:\n\n"
+        for user, info in list(scammers_db.items())[:10]:  # Показываем первые 10
+            text += f"• {user} — {info.get('reason', 'Нет причины')}\n"
+            
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Назад в меню", callback_data="back_menu")
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_menu")
+async def back_to_menu(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.message.edit_text("Панель управления базом мошенников:", reply_markup=get_main_menu())
+    await callback.answer()
 
 @dp.message(Command("add"))
 async def add_scammer(message: types.Message):
@@ -63,7 +114,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    print("Бот успешно запущен!")
+    print("Бот с меню успешно запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
