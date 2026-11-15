@@ -1,2 +1,2 @@
-﻿telethon
-aiogram
+﻿aiogram
+aiohttp

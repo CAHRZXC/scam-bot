@@ -1,17 +1,14 @@
 ﻿import os
-import asyncio
 import json
 import logging
 from aiohttp import web
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 
-API_ID = 39070752
-API_HASH = "a7f4346ee8e737e2c176d557a1e8df32"
+TOKEN = "8802626648:AAHYegmfNfmTSQoXIYkLL3Mu3Ok-QrEZI2Q"
 ADMIN_ID = 8405165103
 
 DATA_FILE = "scammers.json"
-GROUPS_FILE = "allowed_groups.json"
 
 def load_json(filename):
     if os.path.exists(filename):
@@ -27,30 +24,30 @@ def save_json(filename, data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 scammers_db = load_json(DATA_FILE)
-allowed_groups = load_json(GROUPS_FILE)
 
 logging.basicConfig(level=logging.INFO)
 
-session_string = os.environ.get("SESSION_STRING")
-client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-@client.on(events.NewMessage(pattern=r"^/add", outgoing=True))
-async def add_scammer(event):
-    if event.sender_id != ADMIN_ID:
+@dp.message(Command("add"))
+async def add_scammer(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
         return
-    text = event.text.replace("/add", "").strip()
+    
+    text = message.text.replace("/add", "").strip()
     args = text.split("|")
     if len(args) < 2:
-        await event.respond("Использование: /add <username/id> | <причина> [| пруфы]")
+        await message.answer("Использование: /add <username/id> | <причина> [| пруфы]")
         return
-
+    
     target = args[0].strip()
     reason = args[1].strip()
     proof = args[2].strip() if len(args) > 2 else "Нет пруфов"
-
+    
     scammers_db[target] = {"reason": reason, "proof": proof}
     save_json(DATA_FILE, scammers_db)
-    await event.respond(f"Пользователь {target} добавлен в базу!")
+    await message.answer(f"Пользователь {target} добавлен в базу!")
 
 async def handle_ping(request):
     return web.Response(text="Bot is running!")
@@ -66,9 +63,9 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    print("Бот успешно запущен и работает!")
-    await client.run_until_disconnected()
+    print("Бот успешно запущен!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    with client:
-        client.loop.run_until_complete(main())
+    import asyncio
+    asyncio.run(main())
