@@ -16,6 +16,7 @@ ADMIN_ID = 8405165103
 REPORTS_CHANNEL_ID = -1003725925366
 
 DATA_FILE = "scammers.json"
+PENDING_FILE = "pending_reports.json"
 
 
 def load_json(filename):
@@ -35,6 +36,7 @@ def save_json(filename, data):
 
 
 scammers_db = load_json(DATA_FILE)
+pending_reports = load_json(PENDING_FILE)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -62,6 +64,14 @@ def get_admin_inline_menu():
     builder.button(text="Список базы", callback_data="list_scammers")
     builder.button(text="Статистика", callback_data="stats")
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_moderation_keyboard(report_id: str):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Подтвердить жалобу", callback_data=f"approve_rep:{report_id}")
+    builder.button(text="Отклонить", callback_data=f"reject_rep:{report_id}")
+    builder.adjust(2)
     return builder.as_markup()
 
 
@@ -95,7 +105,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if message.chat.type == "private":
         await message.answer(
             "Бот проверки пользователей и приёма жалоб.\n"
-            "В группах просто отправь `@username` или ID — я проверю по базе.",
+            "В группах просто отправь @username или ID — я проверю по базе.",
             reply_markup=get_reply_menu()
         )
     if message.from_user and message.from_user.id == ADMIN_ID:
@@ -119,7 +129,7 @@ async def btn_stats(message: types.Message):
 @dp.message(F.text == "Проверить юзер")
 async def btn_check_prompt(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Отправь `@username` или ID пользователя для проверки.")
+    await message.answer("Отправь @username или ID пользователя для проверки.")
 
 
 @dp.message(F.text == "Подать жалобу")
@@ -127,7 +137,7 @@ async def btn_check_prompt(message: types.Message, state: FSMContext):
 async def start_user_report(message: types.Message, state: FSMContext):
     await state.clear()
     await state.set_state(ReportForm.waiting_target)
-    await message.answer("Введите логин (`@username`) или ID мошенника:")
+    await message.answer("Введите логин (@username) или ID мошенника:")
 
 
 @dp.message(ReportForm.waiting_target, F.text)
@@ -148,47 +158,196 @@ async def process_report_target(message: types.Message, state: FSMContext):
 
 @dp.message(ReportForm.waiting_details)
 async def process_report_details(message: types.Message, state: FSMContext):
+    media_type = None
+    file_id = None
+
+    if message.photo:
+        media_type = "photo"
+        file_id = message.photo[-1].file_id
+    elif message.video:
+        media_type = "video"
+        file_id = message.video.file_id
+    elif message.voice:
+        media_type = "voice"
+        file_id = message.voice.file_id
+    elif message.video_note:
+        media_type = "video_note"
+        file_id = message.video_note.file_id
+    elif message.document:
+        media_type = "document"
+        file_id = message.document.file_id
+
+    if not media_type:
+        await message.answer("Жалобы без пруфов не принимаются")
+        return
+
     data = await state.get_data()
     target = data.get("report_target", "Не указан")
     sender = message.from_user
-    sender_info = f"@{sender.username}" if sender and sender.username else (f"ID {sender.id}" if sender else "Неизвестно")
+    sender_id = sender.id if sender else 0
+    sender_info = f"@{sender.username}" if sender and sender.username else f"ID {sender_id}"
+    description = message.caption or message.text or "(без текстового описания)"
 
-    description = message.text or message.caption or "(без текстового описания)"
+    report_id = str(message.message_id) + f"_{sender_id}"
 
-    header = (
-        "🚨 **НОВАЯ ЖАЛОБА**\n\n"
+    pending_reports[report_id] = {
+        "target": target,
+        "sender_info": sender_info,
+        "sender_id": sender_id,
+        "description": description,
+        "media_type": media_type,
+        "file_id": file_id,
+    }
+    save_json(PENDING_FILE, pending_reports)
+
+    admin_text = (
+        "🚨 **НОВАЯ ЖАЛОБА НА ПРОВЕРКУ**\n\n"
         f"👤 **Нарушитель:** {target}\n"
-        f"📨 **Отправитель:** {sender_info} (`{sender.id if sender else 0}`)\n"
+        f"📨 **Отправитель:** {sender_info} (`{sender_id}`)\n"
         f"📝 **Описание:** {description}"
     )
 
     try:
-        if message.photo:
-            largest_photo = message.photo[-1]
+        if media_type == "photo" and file_id:
             await bot.send_photo(
-                chat_id=REPORTS_CHANNEL_ID,
-                photo=largest_photo.file_id,
-                caption=header,
-                parse_mode="Markdown"
+                chat_id=ADMIN_ID,
+                photo=file_id,
+                caption=admin_text,
+                parse_mode="Markdown",
+                reply_markup=get_moderation_keyboard(report_id)
             )
-        elif message.document:
-            await bot.send_document(
-                chat_id=REPORTS_CHANNEL_ID,
-                document=message.document.file_id,
-                caption=header,
-                parse_mode="Markdown"
+        elif media_type == "video" and file_id:
+            await bot.send_video(
+                chat_id=ADMIN_ID,
+                video=file_id,
+                caption=admin_text,
+                parse_mode="Markdown",
+                reply_markup=get_moderation_keyboard(report_id)
             )
-        else:
+        elif media_type == "voice" and file_id:
+            await bot.send_voice(
+                chat_id=ADMIN_ID,
+                voice=file_id,
+                caption=admin_text,
+                parse_mode="Markdown",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        elif media_type == "video_note" and file_id:
+            await bot.send_video_note(
+                chat_id=ADMIN_ID,
+                video_note=file_id
+            )
             await bot.send_message(
-                chat_id=REPORTS_CHANNEL_ID,
-                text=header,
-                parse_mode="Markdown"
+                chat_id=ADMIN_ID,
+                text=admin_text,
+                parse_mode="Markdown",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        elif media_type == "document" and file_id:
+            await bot.send_document(
+                chat_id=ADMIN_ID,
+                document=file_id,
+                caption=admin_text,
+                parse_mode="Markdown",
+                reply_markup=get_moderation_keyboard(report_id)
             )
         await message.answer("Жалоба отправлена на рассмотрение.")
     except Exception as e:
-        await message.answer(f"Не удалось отправить жалобу в канал: {e}")
+        await message.answer(f"Ошибка при отправке жалобы на проверку: {e}")
 
     await state.clear()
+
+
+@dp.callback_query(F.data.startswith("approve_rep:"))
+async def approve_report(callback: types.CallbackQuery):
+    if not callback.from_user or callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+
+    report_id = callback.data.split(":", 1)[1]
+    rep = pending_reports.get(report_id)
+    if not rep:
+        await callback.answer("Жалоба уже обработана или не найдена.", show_alert=True)
+        return
+
+    channel_post = (
+        "🚨 **ПОДТВЕРЖДЁННАЯ ЖАЛОБА**\n\n"
+        f"👤 **Нарушитель:** {rep['target']}\n"
+        f"📨 **Отправитель:** {rep['sender_info']} (`{rep['sender_id']}`)\n"
+        f"📝 **Описание:** {rep['description']}"
+    )
+
+    try:
+        media_type = rep.get("media_type")
+        file_id = rep.get("file_id")
+        if media_type == "photo" and file_id:
+            await bot.send_photo(
+                chat_id=REPORTS_CHANNEL_ID,
+                photo=file_id,
+                caption=channel_post,
+                parse_mode="Markdown"
+            )
+        elif media_type == "video" and file_id:
+            await bot.send_video(
+                chat_id=REPORTS_CHANNEL_ID,
+                video=file_id,
+                caption=channel_post,
+                parse_mode="Markdown"
+            )
+        elif media_type == "voice" and file_id:
+            await bot.send_voice(
+                chat_id=REPORTS_CHANNEL_ID,
+                voice=file_id,
+                caption=channel_post,
+                parse_mode="Markdown"
+            )
+        elif media_type == "video_note" and file_id:
+            await bot.send_video_note(
+                chat_id=REPORTS_CHANNEL_ID,
+                video_note=file_id
+            )
+            await bot.send_message(
+                chat_id=REPORTS_CHANNEL_ID,
+                text=channel_post,
+                parse_mode="Markdown"
+            )
+        elif media_type == "document" and file_id:
+            await bot.send_document(
+                chat_id=REPORTS_CHANNEL_ID,
+                document=file_id,
+                caption=channel_post,
+                parse_mode="Markdown"
+            )
+
+        pending_reports.pop(report_id, None)
+        save_json(PENDING_FILE, pending_reports)
+
+        updated_text = (callback.message.caption or callback.message.text or "") + "\n\n✅ **Подтверждено и отправлено в канал**"
+        if callback.message.caption is not None:
+            await callback.message.edit_caption(caption=updated_text, parse_mode="Markdown", reply_markup=None)
+        else:
+            await callback.message.edit_text(text=updated_text, parse_mode="Markdown", reply_markup=None)
+        await callback.answer("Опубликовано в канал!")
+    except Exception as e:
+        await callback.answer(f"Ошибка публикации: {e}", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("reject_rep:"))
+async def reject_report(callback: types.CallbackQuery):
+    if not callback.from_user or callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+
+    report_id = callback.data.split(":", 1)[1]
+    pending_reports.pop(report_id, None)
+    save_json(PENDING_FILE, pending_reports)
+
+    updated_text = (callback.message.caption or callback.message.text or "") + "\n\n❌ **Жалоба отклонена**"
+    if callback.message.caption is not None:
+        await callback.message.edit_caption(caption=updated_text, parse_mode="Markdown", reply_markup=None)
+    else:
+        await callback.message.edit_text(text=updated_text, parse_mode="Markdown", reply_markup=None)
+    await callback.answer("Жалоба отклонена.")
 
 
 @dp.callback_query(F.data == "stats")
