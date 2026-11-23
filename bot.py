@@ -90,14 +90,14 @@ def extract_target(text: str):
 
 def resolve_display_id(target: str, message: types.Message, db_entry):
     if isinstance(db_entry, dict) and db_entry.get("id"):
-        return f"`{db_entry['id']}`"
+        return f"<code>{db_entry['id']}</code>"
     if target.isdigit():
-        return f"`{target}`"
+        return f"<code>{target}</code>"
     if message.reply_to_message and message.reply_to_message.from_user:
         rep_user = message.reply_to_message.from_user
         if rep_user.username and f"@{rep_user.username.lower()}" == target.lower():
-            return f"`{rep_user.id}`"
-    return "`Скрыт (еще не писал в группе)`"
+            return f"<code>{rep_user.id}</code>"
+    return "<code>Скрыт (еще не писал в группе)</code>"
 
 
 def add_scammer_to_db(raw_target: str, reason: str, proof: str = "-"):
@@ -216,10 +216,10 @@ async def process_report_details(message: types.Message, state: FSMContext):
     save_json(PENDING_FILE, pending_reports)
 
     admin_text = (
-        "🚨 **НОВАЯ ЖАЛОБА НА ПРОВЕРКУ**\n\n"
-        f"👤 **Нарушитель:** {target}\n"
-        f"📨 **Отправитель:** {sender_info} (`{sender_id}`)\n"
-        f"📝 **Описание:** {description}"
+        "🚨 <b>НОВАЯ ЖАЛОБА НА ПРОВЕРКУ</b>\n\n"
+        f"👤 <b>Нарушитель:</b> {target}\n"
+        f"📨 <b>Отправитель:</b> {sender_info} (<code>{sender_id}</code>)\n"
+        f"📝 <b>Описание:</b> {description}"
     )
 
     try:
@@ -228,7 +228,7 @@ async def process_report_details(message: types.Message, state: FSMContext):
                 chat_id=ADMIN_ID,
                 photo=file_id,
                 caption=admin_text,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=get_moderation_keyboard(report_id)
             )
         elif media_type == "video" and file_id:
@@ -236,7 +236,7 @@ async def process_report_details(message: types.Message, state: FSMContext):
                 chat_id=ADMIN_ID,
                 video=file_id,
                 caption=admin_text,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=get_moderation_keyboard(report_id)
             )
         elif media_type == "voice" and file_id:
@@ -244,7 +244,7 @@ async def process_report_details(message: types.Message, state: FSMContext):
                 chat_id=ADMIN_ID,
                 voice=file_id,
                 caption=admin_text,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=get_moderation_keyboard(report_id)
             )
         elif media_type == "video_note" and file_id:
@@ -255,7 +255,7 @@ async def process_report_details(message: types.Message, state: FSMContext):
             await bot.send_message(
                 chat_id=ADMIN_ID,
                 text=admin_text,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=get_moderation_keyboard(report_id)
             )
         elif media_type == "document" and file_id:
@@ -263,7 +263,7 @@ async def process_report_details(message: types.Message, state: FSMContext):
                 chat_id=ADMIN_ID,
                 document=file_id,
                 caption=admin_text,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=get_moderation_keyboard(report_id)
             )
         await message.answer("Жалоба отправлена на рассмотрение.")
@@ -286,35 +286,36 @@ async def approve_report(callback: types.CallbackQuery):
         return
 
     channel_post = (
-        "🚨 **ПОДТВЕРЖДЁННАЯ ЖАЛОБА**\n\n"
-        f"👤 **Нарушитель:** {rep['target']}\n"
-        f"📨 **Отправитель:** {rep['sender_info']} (`{rep['sender_id']}`)\n"
-        f"📝 **Описание:** {rep['description']}"
+        "🚨 <b>ПОДТВЕРЖДЁННАЯ ЖАЛОБА</b>\n\n"
+        f"👤 <b>Нарушитель:</b> {rep['target']}\n"
+        f"📨 <b>Отправитель:</b> {rep['sender_info']} (<code>{rep['sender_id']}</code>)\n"
+        f"📝 <b>Описание:</b> {rep['description']}"
     )
 
     try:
         media_type = rep.get("media_type")
         file_id = rep.get("file_id")
+
         if media_type == "photo" and file_id:
             await bot.send_photo(
                 chat_id=REPORTS_CHANNEL_ID,
                 photo=file_id,
                 caption=channel_post,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
         elif media_type == "video" and file_id:
             await bot.send_video(
                 chat_id=REPORTS_CHANNEL_ID,
                 video=file_id,
                 caption=channel_post,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
         elif media_type == "voice" and file_id:
             await bot.send_voice(
                 chat_id=REPORTS_CHANNEL_ID,
                 voice=file_id,
                 caption=channel_post,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
         elif media_type == "video_note" and file_id:
             await bot.send_video_note(
@@ -324,14 +325,14 @@ async def approve_report(callback: types.CallbackQuery):
             await bot.send_message(
                 chat_id=REPORTS_CHANNEL_ID,
                 text=channel_post,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
         elif media_type == "document" and file_id:
             await bot.send_document(
                 chat_id=REPORTS_CHANNEL_ID,
                 document=file_id,
                 caption=channel_post,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
 
         saved_key = add_scammer_to_db(
@@ -345,12 +346,12 @@ async def approve_report(callback: types.CallbackQuery):
 
         updated_text = (
             (callback.message.caption or callback.message.text or "")
-            + f"\n\n✅ **Подтверждено, отправлено в канал и добавлено в базу ({saved_key})**"
+            + f"\n\n✅ <b>Подтверждено, отправлено в канал и добавлено в базу ({saved_key})</b>"
         )
         if callback.message.caption is not None:
-            await callback.message.edit_caption(caption=updated_text, parse_mode="Markdown", reply_markup=None)
+            await callback.message.edit_caption(caption=updated_text, parse_mode="HTML", reply_markup=None)
         else:
-            await callback.message.edit_text(text=updated_text, parse_mode="Markdown", reply_markup=None)
+            await callback.message.edit_text(text=updated_text, parse_mode="HTML", reply_markup=None)
         await callback.answer("Опубликовано и добавлено в базу!")
     except Exception as e:
         await callback.answer(f"Ошибка публикации: {e}", show_alert=True)
@@ -366,11 +367,11 @@ async def reject_report(callback: types.CallbackQuery):
     pending_reports.pop(report_id, None)
     save_json(PENDING_FILE, pending_reports)
 
-    updated_text = (callback.message.caption or callback.message.text or "") + "\n\n❌ **Жалоба отклонена**"
+    updated_text = (callback.message.caption or callback.message.text or "") + "\n\n❌ <b>Жалоба отклонена</b>"
     if callback.message.caption is not None:
-        await callback.message.edit_caption(caption=updated_text, parse_mode="Markdown", reply_markup=None)
+        await callback.message.edit_caption(caption=updated_text, parse_mode="HTML", reply_markup=None)
     else:
-        await callback.message.edit_text(text=updated_text, parse_mode="Markdown", reply_markup=None)
+        await callback.message.edit_text(text=updated_text, parse_mode="HTML", reply_markup=None)
     await callback.answer("Жалоба отклонена.")
 
 
@@ -512,27 +513,27 @@ async def check_scammer(message: types.Message):
         reason = found_entry.get("reason", "Не указана") if isinstance(found_entry, dict) else str(found_entry)
         id_line = resolve_display_id(found_key, message, found_entry)
         reply_text = (
-            f"⚠️ **ВНИМАНИЕ! ЭТО СКАМ!**\n\n"
-            f"👤 **Пользователь:** {found_key}\n"
+            f"⚠️ <b>ВНИМАНИЕ! ЭТО СКАМ!</b>\n\n"
+            f"👤 <b>Пользователь:</b> {found_key}\n"
             f"🆔 {id_line}\n"
-            f"❌ **Статус:** НАЙДЕН В БАЗЕ СКАМА\n"
-            f"📝 **Причина:** {reason}"
+            f"❌ <b>Статус:</b> НАЙДЕН В БАЗЕ СКАМА\n"
+            f"📝 <b>Причина:</b> {reason}"
         )
     else:
         id_line = resolve_display_id(target, message, None)
         reply_text = (
-            f"✅ **ПРОВЕРКА ПРОЙДЕНА**\n\n"
-            f"👤 **Пользователь:** {target}\n"
+            f"✅ <b>ПРОВЕРКА ПРОЙДЕНА</b>\n\n"
+            f"👤 <b>Пользователь:</b> {target}\n"
             f"🆔 {id_line}\n"
-            f"ℹ️ **Статус:** В базе скама отсутствует."
+            f"ℹ️ <b>Статус:</b> В базе скама отсутствует."
         )
 
     try:
-        await message.reply(reply_text, parse_mode="Markdown")
+        await message.reply(reply_text, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Ошибка ответа на проверку '{target}': {e}")
         try:
-            await message.answer(reply_text, parse_mode="Markdown")
+            await message.answer(reply_text, parse_mode="HTML")
         except Exception as e2:
             logger.error(f"Повторная ошибка отправки ответа '{target}': {e2}")
 
