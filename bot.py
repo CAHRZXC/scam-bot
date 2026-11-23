@@ -39,6 +39,7 @@ scammers_db = load_json(DATA_FILE)
 pending_reports = load_json(PENDING_FILE)
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("scam_bot")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -78,7 +79,7 @@ def get_moderation_keyboard(report_id: str):
 def extract_target(text: str):
     if not text:
         return None
-    username_match = re.search(r"@[A-Za-z0-9_]{3,}", text)
+    username_match = re.search(r"@[A-Za-z0-9_]{2,}", text)
     if username_match:
         return username_match.group(0)
     id_match = re.search(r"\b\d{5,15}\b", text)
@@ -97,6 +98,20 @@ def resolve_display_id(target: str, message: types.Message, db_entry):
         if rep_user.username and f"@{rep_user.username.lower()}" == target.lower():
             return f"`{rep_user.id}`"
     return "`Скрыт (еще не писал в группе)`"
+
+
+def add_scammer_to_db(raw_target: str, reason: str, proof: str = "-"):
+    extracted = extract_target(raw_target) or raw_target.strip()
+    key = extracted
+    scammer_id = extracted if extracted.isdigit() else None
+
+    scammers_db[key] = {
+        "reason": reason,
+        "proof": proof,
+        "id": scammer_id,
+    }
+    save_json(DATA_FILE, scammers_db)
+    return key
 
 
 @dp.message(Command("start", "menu"))
@@ -319,15 +334,24 @@ async def approve_report(callback: types.CallbackQuery):
                 parse_mode="Markdown"
             )
 
+        saved_key = add_scammer_to_db(
+            raw_target=rep["target"],
+            reason=rep["description"],
+            proof=f"report:{report_id}"
+        )
+
         pending_reports.pop(report_id, None)
         save_json(PENDING_FILE, pending_reports)
 
-        updated_text = (callback.message.caption or callback.message.text or "") + "\n\n✅ **Подтверждено и отправлено в канал**"
+        updated_text = (
+            (callback.message.caption or callback.message.text or "")
+            + f"\n\n✅ **Подтверждено, отправлено в канал и добавлено в базу ({saved_key})**"
+        )
         if callback.message.caption is not None:
             await callback.message.edit_caption(caption=updated_text, parse_mode="Markdown", reply_markup=None)
         else:
             await callback.message.edit_text(text=updated_text, parse_mode="Markdown", reply_markup=None)
-        await callback.answer("Опубликовано в канал!")
+        await callback.answer("Опубликовано и добавлено в базу!")
     except Exception as e:
         await callback.answer(f"Ошибка публикации: {e}", show_alert=True)
 
@@ -420,9 +444,8 @@ async def handle_admin_add(message: types.Message):
     reason = args[1].strip()
     proof = args[2].strip() if len(args) > 2 else "-"
 
-    scammers_db[target] = {"reason": reason, "proof": proof}
-    save_json(DATA_FILE, scammers_db)
-    await message.reply(f"Добавлено: {target}")
+    saved_key = add_scammer_to_db(target, reason, proof)
+    await message.reply(f"Добавлено: {saved_key}")
 
 
 @dp.message(F.document)
@@ -459,12 +482,17 @@ async def check_scammer(message: types.Message):
         return
 
     raw = message.text.strip()
-    if raw.startswith("/") or "|" in raw:
+    if raw.startswith("/"):
+        return
+
+    if raw.lower().startswith(("репорт", "жалоба")) and "|" in raw:
         return
 
     target = extract_target(raw)
     if not target:
         return
+
+    logger.info(f"Проверка цели '{target}' в чате {message.chat.id} от {message.from_user.id if message.from_user else 0}")
 
     query = target.lower()
     found_key = None
@@ -483,23 +511,30 @@ async def check_scammer(message: types.Message):
     if found_key:
         reason = found_entry.get("reason", "Не указана") if isinstance(found_entry, dict) else str(found_entry)
         id_line = resolve_display_id(found_key, message, found_entry)
-        await message.reply(
+        reply_text = (
             f"⚠️ **ВНИМАНИЕ! ЭТО СКАМ!**\n\n"
             f"👤 **Пользователь:** {found_key}\n"
-            f"🆔 **ID:** {id_line}\n"
+            f"🆔 {id_line}\n"
             f"❌ **Статус:** НАЙДЕН В БАЗЕ СКАМА\n"
-            f"📝 **Причина:** {reason}",
-            parse_mode="Markdown"
+            f"📝 **Причина:** {reason}"
         )
     else:
         id_line = resolve_display_id(target, message, None)
-        await message.reply(
+        reply_text = (
             f"✅ **ПРОВЕРКА ПРОЙДЕНА**\n\n"
             f"👤 **Пользователь:** {target}\n"
-            f"🆔 **ID:** {id_line}\n"
-            f"ℹ️ **Статус:** В базе скама отсутствует.",
-            parse_mode="Markdown"
+            f"🆔 {id_line}\n"
+            f"ℹ️ **Статус:** В базе скама отсутствует."
         )
+
+    try:
+        await message.reply(reply_text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка ответа на проверку '{target}': {e}")
+        try:
+            await message.answer(reply_text, parse_mode="Markdown")
+        except Exception as e2:
+            logger.error(f"Повторная ошибка отправки ответа '{target}': {e2}")
 
 
 async def handle_ping(request):
@@ -519,7 +554,7 @@ async def start_web_server():
 async def main():
     await start_web_server()
     logging.info("Бот запущен!")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, skip_updates=False)
 
 
 if __name__ == "__main__":
