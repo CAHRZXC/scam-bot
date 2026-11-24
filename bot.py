@@ -9,7 +9,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, InputMediaPhoto
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 TOKEN = "8802626648:AAHYegmfNfmTSQoXIYkLL3Mu3Ok-QrEZI2Q"
@@ -41,6 +41,10 @@ def save_json(filename, data):
 
 scammers_db = load_json(DATA_FILE)
 pending_reports = load_json(PENDING_FILE)
+
+# Буфер для альбомов (media_group_id -> список элементов)
+media_group_buffer = {}
+media_group_tasks = {}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scam_bot")
@@ -180,6 +184,146 @@ async def send_scammer_report_card(chat_id: int, found_key: str, found_entry):
     )
 
 
+async def finalize_report_submission(
+    chat_id: int,
+    state: FSMContext,
+    sender: types.User | None,
+    first_message_id: int,
+    media_type: str | None,
+    file_id: str | None,
+    photo_ids: list[str],
+    raw_text: str,
+    proof_link: str | None,
+):
+    data = await state.get_data()
+    target = data.get("report_target", "Не указан")
+    sender_id = sender.id if sender else 0
+    sender_info = f"@{sender.username}" if sender and sender.username else f"ID {sender_id}"
+    description = raw_text.strip() if raw_text.strip() else "(без текстового описания)"
+
+    report_id = str(first_message_id) + f"_{sender_id}"
+
+    pending_reports[report_id] = {
+        "target": target,
+        "sender_info": sender_info,
+        "sender_id": sender_id,
+        "description": description,
+        "proof_link": proof_link,
+        "media_type": media_type,
+        "file_id": file_id,
+        "photo_ids": photo_ids,
+    }
+    save_json(PENDING_FILE, pending_reports)
+
+    admin_text = (
+        "🚨 <b>НОВАЯ ЖАЛОБА НА ПРОВЕРКУ</b>\n\n"
+        f"👤 <b>Нарушитель:</b> {target}\n"
+        f"📨 <b>Отправитель:</b> {sender_info} (<code>{sender_id}</code>)\n"
+        f"📝 <b>Описание:</b> {description}"
+    )
+
+    try:
+        if len(photo_ids) > 1:
+            album = [InputMediaPhoto(media=pid) for pid in photo_ids[:10]]
+            await bot.send_media_group(chat_id=ADMIN_ID, media=album)
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        elif media_type == "photo" and file_id:
+            await bot.send_photo(
+                chat_id=ADMIN_ID,
+                photo=file_id,
+                caption=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        elif media_type == "video" and file_id:
+            await bot.send_video(
+                chat_id=ADMIN_ID,
+                video=file_id,
+                caption=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        elif media_type == "voice" and file_id:
+            await bot.send_voice(
+                chat_id=ADMIN_ID,
+                voice=file_id,
+                caption=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        elif media_type == "video_note" and file_id:
+            await bot.send_video_note(
+                chat_id=ADMIN_ID,
+                video_note=file_id
+            )
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        elif media_type == "document" and file_id:
+            await bot.send_document(
+                chat_id=ADMIN_ID,
+                document=file_id,
+                caption=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        else:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Жалоба отправлена на рассмотрение.\n"
+                f'Канал с жалобами: <a href="{CHANNEL_LINK}">открыть канал</a>'
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await bot.send_message(chat_id=chat_id, text=f"Ошибка при отправке жалобы на проверку: {e}")
+
+    await state.clear()
+
+
+async def flush_media_group(group_key: str, state: FSMContext):
+    await asyncio.sleep(0.8)
+    items = media_group_buffer.pop(group_key, [])
+    media_group_tasks.pop(group_key, None)
+
+    if not items:
+        return
+
+    first = items[0]
+    photo_ids = [m.photo[-1].file_id for m in items if m.photo]
+    captions = [m.caption.strip() for m in items if m.caption and m.caption.strip()]
+    joined_text = "\n".join(captions)
+    proof_link = extract_link(joined_text)
+
+    await finalize_report_submission(
+        chat_id=first.chat.id,
+        state=state,
+        sender=first.from_user,
+        first_message_id=first.message_id,
+        media_type="photo" if photo_ids else None,
+        file_id=photo_ids[0] if photo_ids else None,
+        photo_ids=photo_ids,
+        raw_text=joined_text,
+        proof_link=proof_link,
+    )
+
+
 @dp.message(CommandStart(deep_link=True))
 async def cmd_start_deeplink(message: types.Message, state: FSMContext, command: CommandStart):
     await state.clear()
@@ -269,12 +413,21 @@ async def process_report_target(message: types.Message, state: FSMContext):
 
 @dp.message(ReportForm.waiting_details)
 async def process_report_details(message: types.Message, state: FSMContext):
+    if message.media_group_id:
+        group_key = f"{message.chat.id}_{message.media_group_id}"
+        media_group_buffer.setdefault(group_key, []).append(message)
+        if group_key not in media_group_tasks:
+            media_group_tasks[group_key] = asyncio.create_task(flush_media_group(group_key, state))
+        return
+
     media_type = None
     file_id = None
+    photo_ids = []
 
     if message.photo:
         media_type = "photo"
         file_id = message.photo[-1].file_id
+        photo_ids = [file_id]
     elif message.video:
         media_type = "video"
         file_id = message.video.file_id
@@ -295,93 +448,17 @@ async def process_report_details(message: types.Message, state: FSMContext):
         await message.answer("Жалобы без пруфов не принимаются")
         return
 
-    data = await state.get_data()
-    target = data.get("report_target", "Не указан")
-    sender = message.from_user
-    sender_id = sender.id if sender else 0
-    sender_info = f"@{sender.username}" if sender and sender.username else f"ID {sender_id}"
-    description = raw_text.strip() if raw_text.strip() else "(без текстового описания)"
-
-    report_id = str(message.message_id) + f"_{sender_id}"
-
-    pending_reports[report_id] = {
-        "target": target,
-        "sender_info": sender_info,
-        "sender_id": sender_id,
-        "description": description,
-        "proof_link": proof_link,
-        "media_type": media_type,
-        "file_id": file_id,
-    }
-    save_json(PENDING_FILE, pending_reports)
-
-    admin_text = (
-        "🚨 <b>НОВАЯ ЖАЛОБА НА ПРОВЕРКУ</b>\n\n"
-        f"👤 <b>Нарушитель:</b> {target}\n"
-        f"📨 <b>Отправитель:</b> {sender_info} (<code>{sender_id}</code>)\n"
-        f"📝 <b>Описание:</b> {description}"
+    await finalize_report_submission(
+        chat_id=message.chat.id,
+        state=state,
+        sender=message.from_user,
+        first_message_id=message.message_id,
+        media_type=media_type,
+        file_id=file_id,
+        photo_ids=photo_ids,
+        raw_text=raw_text,
+        proof_link=proof_link,
     )
-
-    try:
-        if media_type == "photo" and file_id:
-            await bot.send_photo(
-                chat_id=ADMIN_ID,
-                photo=file_id,
-                caption=admin_text,
-                parse_mode="HTML",
-                reply_markup=get_moderation_keyboard(report_id)
-            )
-        elif media_type == "video" and file_id:
-            await bot.send_video(
-                chat_id=ADMIN_ID,
-                video=file_id,
-                caption=admin_text,
-                parse_mode="HTML",
-                reply_markup=get_moderation_keyboard(report_id)
-            )
-        elif media_type == "voice" and file_id:
-            await bot.send_voice(
-                chat_id=ADMIN_ID,
-                voice=file_id,
-                caption=admin_text,
-                parse_mode="HTML",
-                reply_markup=get_moderation_keyboard(report_id)
-            )
-        elif media_type == "video_note" and file_id:
-            await bot.send_video_note(
-                chat_id=ADMIN_ID,
-                video_note=file_id
-            )
-            await bot.send_message(
-                chat_id=ADMIN_ID,
-                text=admin_text,
-                parse_mode="HTML",
-                reply_markup=get_moderation_keyboard(report_id)
-            )
-        elif media_type == "document" and file_id:
-            await bot.send_document(
-                chat_id=ADMIN_ID,
-                document=file_id,
-                caption=admin_text,
-                parse_mode="HTML",
-                reply_markup=get_moderation_keyboard(report_id)
-            )
-        else:
-            await bot.send_message(
-                chat_id=ADMIN_ID,
-                text=admin_text,
-                parse_mode="HTML",
-                reply_markup=get_moderation_keyboard(report_id)
-            )
-        await message.answer(
-            "Жалоба отправлена на рассмотрение.\n"
-            f'Канал с жалобами: <a href="{CHANNEL_LINK}">открыть канал</a>',
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await message.answer(f"Ошибка при отправке жалобы на проверку: {e}")
-
-    await state.clear()
 
 
 @dp.callback_query(F.data.startswith("approve_rep:"))
@@ -406,9 +483,20 @@ async def approve_report(callback: types.CallbackQuery):
     try:
         media_type = rep.get("media_type")
         file_id = rep.get("file_id")
+        photo_ids = rep.get("photo_ids") or []
         sent_msg = None
 
-        if media_type == "photo" and file_id:
+        if len(photo_ids) > 1:
+            album = [InputMediaPhoto(media=pid) for pid in photo_ids[:10]]
+            sent_group = await bot.send_media_group(chat_id=REPORTS_CHANNEL_ID, media=album)
+            sent_msg = await bot.send_message(
+                chat_id=REPORTS_CHANNEL_ID,
+                text=channel_post,
+                parse_mode="HTML"
+            )
+            if sent_group:
+                sent_msg = sent_group[0]
+        elif media_type == "photo" and file_id:
             sent_msg = await bot.send_photo(
                 chat_id=REPORTS_CHANNEL_ID,
                 photo=file_id,
