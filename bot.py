@@ -5,18 +5,22 @@ import asyncio
 import logging
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 TOKEN = "8802626648:AAHYegmfNfmTSQoXIYkLL3Mu3Ok-QrEZI2Q"
 ADMIN_ID = 8405165103
 REPORTS_CHANNEL_ID = -1003725925366
+CHANNEL_LINK = "https://t.me/+cowjUfhNz6kzMjNh"
 
 DATA_FILE = "scammers.json"
 PENDING_FILE = "pending_reports.json"
+
+LINK_PATTERN = re.compile(r"(https?://\S+|t\.me/\S+|www\.\S+)", re.IGNORECASE)
 
 
 def load_json(filename):
@@ -76,6 +80,33 @@ def get_moderation_keyboard(report_id: str):
     return builder.as_markup()
 
 
+def get_view_report_keyboard(post_url: str):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Смотреть жалобу ↗", url=post_url)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_channel_post_link(chat_id: int, message_id: int):
+    raw_id = str(chat_id)
+    if raw_id.startswith("-100"):
+        internal_id = raw_id[4:]
+        return f"https://t.me/c/{internal_id}/{message_id}"
+    return CHANNEL_LINK
+
+
+def extract_link(text: str):
+    if not text:
+        return None
+    match = LINK_PATTERN.search(text.strip())
+    if not match:
+        return None
+    url = match.group(0).rstrip(".,!?)];\"'")
+    if url.lower().startswith(("t.me/", "www.")):
+        url = "https://" + url
+    return url
+
+
 def extract_target(text: str):
     if not text:
         return None
@@ -100,18 +131,79 @@ def resolve_display_id(target: str, message: types.Message, db_entry):
     return "<code>Скрыт (еще не писал в группе)</code>"
 
 
-def add_scammer_to_db(raw_target: str, reason: str, proof: str = "-"):
+def add_scammer_to_db(raw_target: str, reason: str, proof: str = "-", post_link: str = None):
     extracted = extract_target(raw_target) or raw_target.strip()
     key = extracted
     scammer_id = extracted if extracted.isdigit() else None
+
+    existing = scammers_db.get(key)
+    final_post_link = post_link or (existing.get("post_link") if isinstance(existing, dict) else None) or CHANNEL_LINK
 
     scammers_db[key] = {
         "reason": reason,
         "proof": proof,
         "id": scammer_id,
+        "post_link": final_post_link,
     }
     save_json(DATA_FILE, scammers_db)
     return key
+
+
+def find_scammer_entry(target: str):
+    query = target.lower()
+    for key, val in scammers_db.items():
+        if key.lower() == query:
+            return key, val
+        if isinstance(val, dict) and str(val.get("id", "")).lower() == query:
+            return key, val
+    return None, None
+
+
+async def send_scammer_report_card(chat_id: int, found_key: str, found_entry):
+    reason = found_entry.get("reason", "Не указана") if isinstance(found_entry, dict) else str(found_entry)
+    scammer_id = found_entry.get("id") if isinstance(found_entry, dict) else None
+    post_link = (found_entry.get("post_link") if isinstance(found_entry, dict) else None) or CHANNEL_LINK
+    id_display = f"<code>{scammer_id}</code>" if scammer_id else "<code>Не указан</code>"
+
+    text = (
+        f"⚠️ <b>ВНИМАНИЕ! ЭТО СКАМ!</b>\n\n"
+        f"👤 <b>Пользователь:</b> {found_key}\n"
+        f"🆔 {id_display}\n"
+        f"❌ <b>Статус:</b> НАЙДЕН В БАЗЕ СКАМА\n"
+        f"📝 <b>Причина:</b> {reason}"
+    )
+    await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=get_view_report_keyboard(post_link)
+    )
+
+
+@dp.message(CommandStart(deep_link=True))
+async def cmd_start_deeplink(message: types.Message, state: FSMContext, command: CommandStart):
+    await state.clear()
+    args = (command.args or "").strip()
+
+    if args.startswith("rep_"):
+        raw_query = args[4:].replace("_", " ").strip()
+        found_key, found_entry = find_scammer_entry(raw_query)
+        if not found_key and not raw_query.startswith("@") and raw_query.isalnum():
+            found_key, found_entry = find_scammer_entry("@" + raw_query)
+
+        if found_key:
+            await send_scammer_report_card(message.chat.id, found_key, found_entry)
+            return
+
+    await message.answer(
+        "Бот проверки пользователей и приёма жалоб.\n"
+        "В группах просто отправь @username или ID — я проверю по базе.\n"
+        f'Канал с жалобами: <a href="{CHANNEL_LINK}">перейти в канал</a>',
+        parse_mode="HTML",
+        reply_markup=get_reply_menu() if message.chat.type == "private" else None
+    )
+    if message.from_user and message.from_user.id == ADMIN_ID:
+        await message.answer("Панель администратора:", reply_markup=get_admin_inline_menu())
 
 
 @dp.message(Command("start", "menu"))
@@ -120,7 +212,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if message.chat.type == "private":
         await message.answer(
             "Бот проверки пользователей и приёма жалоб.\n"
-            "В группах просто отправь @username или ID — я проверю по базе.",
+            "В группах просто отправь @username или ID — я проверю по базе.\n"
+            f'Канал с жалобами: <a href="{CHANNEL_LINK}">перейти в канал</a>',
+            parse_mode="HTML",
             reply_markup=get_reply_menu()
         )
     if message.from_user and message.from_user.id == ADMIN_ID:
@@ -131,7 +225,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
 async def btn_about(message: types.Message):
     await message.answer(
         "Бот проверяет пользователей и ID по базе скамеров.\n"
-        "Чтобы подать жалобу — нажми «Подать жалобу» или напиши /report.",
+        "Чтобы подать жалобу — нажми «Подать жалобу» или напиши /report.\n"
+        f'Канал с жалобами: <a href="{CHANNEL_LINK}">перейти в канал</a>',
+        parse_mode="HTML",
         reply_markup=get_reply_menu() if message.chat.type == "private" else None
     )
 
@@ -192,7 +288,10 @@ async def process_report_details(message: types.Message, state: FSMContext):
         media_type = "document"
         file_id = message.document.file_id
 
-    if not media_type:
+    raw_text = message.caption or message.text or ""
+    proof_link = extract_link(raw_text)
+
+    if not media_type and not proof_link:
         await message.answer("Жалобы без пруфов не принимаются")
         return
 
@@ -201,7 +300,7 @@ async def process_report_details(message: types.Message, state: FSMContext):
     sender = message.from_user
     sender_id = sender.id if sender else 0
     sender_info = f"@{sender.username}" if sender and sender.username else f"ID {sender_id}"
-    description = message.caption or message.text or "(без текстового описания)"
+    description = raw_text.strip() if raw_text.strip() else "(без текстового описания)"
 
     report_id = str(message.message_id) + f"_{sender_id}"
 
@@ -210,6 +309,7 @@ async def process_report_details(message: types.Message, state: FSMContext):
         "sender_info": sender_info,
         "sender_id": sender_id,
         "description": description,
+        "proof_link": proof_link,
         "media_type": media_type,
         "file_id": file_id,
     }
@@ -266,7 +366,18 @@ async def process_report_details(message: types.Message, state: FSMContext):
                 parse_mode="HTML",
                 reply_markup=get_moderation_keyboard(report_id)
             )
-        await message.answer("Жалоба отправлена на рассмотрение.")
+        else:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_moderation_keyboard(report_id)
+            )
+        await message.answer(
+            "Жалоба отправлена на рассмотрение.\n"
+            f'Канал с жалобами: <a href="{CHANNEL_LINK}">открыть канал</a>',
+            parse_mode="HTML"
+        )
     except Exception as e:
         await message.answer(f"Ошибка при отправке жалобы на проверку: {e}")
 
@@ -295,23 +406,24 @@ async def approve_report(callback: types.CallbackQuery):
     try:
         media_type = rep.get("media_type")
         file_id = rep.get("file_id")
+        sent_msg = None
 
         if media_type == "photo" and file_id:
-            await bot.send_photo(
+            sent_msg = await bot.send_photo(
                 chat_id=REPORTS_CHANNEL_ID,
                 photo=file_id,
                 caption=channel_post,
                 parse_mode="HTML"
             )
         elif media_type == "video" and file_id:
-            await bot.send_video(
+            sent_msg = await bot.send_video(
                 chat_id=REPORTS_CHANNEL_ID,
                 video=file_id,
                 caption=channel_post,
                 parse_mode="HTML"
             )
         elif media_type == "voice" and file_id:
-            await bot.send_voice(
+            sent_msg = await bot.send_voice(
                 chat_id=REPORTS_CHANNEL_ID,
                 voice=file_id,
                 caption=channel_post,
@@ -322,23 +434,32 @@ async def approve_report(callback: types.CallbackQuery):
                 chat_id=REPORTS_CHANNEL_ID,
                 video_note=file_id
             )
-            await bot.send_message(
+            sent_msg = await bot.send_message(
                 chat_id=REPORTS_CHANNEL_ID,
                 text=channel_post,
                 parse_mode="HTML"
             )
         elif media_type == "document" and file_id:
-            await bot.send_document(
+            sent_msg = await bot.send_document(
                 chat_id=REPORTS_CHANNEL_ID,
                 document=file_id,
                 caption=channel_post,
                 parse_mode="HTML"
             )
+        else:
+            sent_msg = await bot.send_message(
+                chat_id=REPORTS_CHANNEL_ID,
+                text=channel_post,
+                parse_mode="HTML"
+            )
+
+        post_link = build_channel_post_link(REPORTS_CHANNEL_ID, sent_msg.message_id) if sent_msg else CHANNEL_LINK
 
         saved_key = add_scammer_to_db(
             raw_target=rep["target"],
             reason=rep["description"],
-            proof=f"report:{report_id}"
+            proof=rep.get("proof_link") or f"report:{report_id}",
+            post_link=post_link
         )
 
         pending_reports.pop(report_id, None)
@@ -352,7 +473,18 @@ async def approve_report(callback: types.CallbackQuery):
             await callback.message.edit_caption(caption=updated_text, parse_mode="HTML", reply_markup=None)
         else:
             await callback.message.edit_text(text=updated_text, parse_mode="HTML", reply_markup=None)
-        await callback.answer("Опубликовано и добавлено в базу!")
+
+        try:
+            db_doc = FSInputFile(DATA_FILE, filename=DATA_FILE)
+            await bot.send_document(
+                chat_id=ADMIN_ID,
+                document=db_doc,
+                caption=f"Обновлённая база после добавления {saved_key} (записей: {len(scammers_db)})"
+            )
+        except Exception as doc_err:
+            logger.error(f"Не удалось отправить файл базы {DATA_FILE}: {doc_err}")
+
+        await callback.answer("Опубликовано, добавлено в базу и файл отправлен!")
     except Exception as e:
         await callback.answer(f"Ошибка публикации: {e}", show_alert=True)
 
@@ -445,7 +577,7 @@ async def handle_admin_add(message: types.Message):
     reason = args[1].strip()
     proof = args[2].strip() if len(args) > 2 else "-"
 
-    saved_key = add_scammer_to_db(target, reason, proof)
+    saved_key = add_scammer_to_db(target, reason, proof, post_link=CHANNEL_LINK)
     await message.reply(f"Добавлено: {saved_key}")
 
 
@@ -495,29 +627,23 @@ async def check_scammer(message: types.Message):
 
     logger.info(f"Проверка цели '{target}' в чате {message.chat.id} от {message.from_user.id if message.from_user else 0}")
 
-    query = target.lower()
-    found_key = None
-    found_entry = None
-
-    for key, val in scammers_db.items():
-        if key.lower() == query:
-            found_key = key
-            found_entry = val
-            break
-        if isinstance(val, dict) and str(val.get("id", "")).lower() == query:
-            found_key = key
-            found_entry = val
-            break
+    found_key, found_entry = find_scammer_entry(target)
 
     if found_key:
         reason = found_entry.get("reason", "Не указана") if isinstance(found_entry, dict) else str(found_entry)
         id_line = resolve_display_id(found_key, message, found_entry)
+
+        me = await bot.get_me()
+        clean_code = re.sub(r"[^A-Za-z0-9_]", "", found_key.lstrip("@"))
+        deep_link = f"https://t.me/{me.username}?start=rep_{clean_code}" if me.username and clean_code else CHANNEL_LINK
+
         reply_text = (
             f"⚠️ <b>ВНИМАНИЕ! ЭТО СКАМ!</b>\n\n"
             f"👤 <b>Пользователь:</b> {found_key}\n"
             f"🆔 {id_line}\n"
             f"❌ <b>Статус:</b> НАЙДЕН В БАЗЕ СКАМА\n"
-            f"📝 <b>Причина:</b> {reason}"
+            f"📝 <b>Причина:</b> {reason}\n"
+            f'🔗 <a href="{deep_link}">Открыть жалобу в боте</a>'
         )
     else:
         id_line = resolve_display_id(target, message, None)
